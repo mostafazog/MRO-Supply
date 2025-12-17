@@ -174,64 +174,106 @@ class BatchScraper:
             # Parse HTML
             soup = BeautifulSoup(response.content, 'html.parser')
 
-            # Extract product data using same logic as main scraper
+            # Extract product data using comprehensive logic
             product = {
                 'url': url,
-                'title': '',
+                'name': '',
+                'brand': '',
+                'mpn': '',
                 'sku': '',
                 'price': '',
-                'availability': '',
-                'description': '',
-                'specifications': [],
-                'images': [],
+                'price_note': '',
                 'category': '',
-                'brand': '',
+                'description': '',
+                'images': [],
+                'specifications': {},
+                'additional_description': '',
+                'documents': [],
+                'related_products': [],
+                'availability': '',
                 'scraped_at': time.time()
             }
 
-            # Title - use first h1
-            title_tag = soup.find('h1')
-            if title_tag:
-                product['title'] = title_tag.get_text(strip=True)
+            # Extract from JSON-LD (structured data)
+            json_ld = soup.find('script', type='application/ld+json')
+            if json_ld:
+                try:
+                    import json as json_module
+                    data = json_module.loads(json_ld.string)
+                    if data.get('@type') == 'Product':
+                        product['name'] = data.get('name', '')
+                        product['description'] = data.get('description', '')
+                        product['category'] = data.get('category', '')
+                        if data.get('image'):
+                            product['images'].append(data['image'])
 
-            # SKU - extract from URL
-            url_parts = url.rstrip('/').split('/')
-            if url_parts:
-                last_part = url_parts[-1]
-                if '_' in last_part:
-                    product['sku'] = last_part.split('_')[0]
+                        offers = data.get('offers', [])
+                        if isinstance(offers, list) and offers:
+                            offer = offers[0]
+                            product['sku'] = str(offer.get('sku', ''))
+                            product['mpn'] = offer.get('mpn', '')
+                            product['price'] = f"${offer.get('price', '')}"
+                            product['availability'] = offer.get('availability', '')
+                except (json_module.JSONDecodeError, KeyError):
+                    pass
 
-            # Price
-            price_tag = soup.find('p', class_='price')
-            if price_tag:
-                product['price'] = price_tag.get_text(strip=True)
+            # Extract brand
+            brand_meta = soup.find('meta', {'name': 'twitter:data1'})
+            if brand_meta:
+                product['brand'] = brand_meta.get('content', brand_meta.get('value', ''))
 
-            # Availability
-            avail_div = soup.find('div', class_=lambda x: x and 'availability' in x.lower() if x else False)
-            if avail_div:
-                product['availability'] = avail_div.get_text(strip=True)
+            # Extract price (backup)
+            if not product['price']:
+                price_elem = soup.find('p', class_='price')
+                if price_elem:
+                    product['price'] = price_elem.get_text(strip=True)
 
-            # Description - from meta tag
-            meta_desc = soup.find('meta', attrs={'name': 'description'})
-            if meta_desc:
-                product['description'] = meta_desc.get('content', '')
+            # Extract specifications
+            spec_sections = soup.find_all('div', class_='m-accordion--item')
+            for spec_section in spec_sections:
+                spec_head = spec_section.find('button', class_='m-accordion--item--head')
+                if spec_head and 'SPECIFICATION' in spec_head.get_text():
+                    spec_body = spec_section.find('div', class_='m-accordion--item--body')
+                    if spec_body:
+                        grid_table = spec_body.find('div', class_='o-grid-table')
+                        if grid_table:
+                            grid_items = grid_table.find_all('div', class_='o-grid-item')
+                            for item in grid_items:
+                                key_elem = item.find('p', class_='key')
+                                value_elem = item.find('p', class_='value')
+                                if key_elem and value_elem:
+                                    key = key_elem.get_text(strip=True)
+                                    value = value_elem.get_text(strip=True)
+                                    if key and value:
+                                        product['specifications'][key] = value
+                    break
 
-            # Brand - extract from URL
-            if '_' in url_parts[-1]:
-                parts = url_parts[-1].split('_')
-                if len(parts) >= 3:
-                    product['brand'] = parts[-1].replace('-', ' ').title()
+            # Extract additional description
+            additional_desc_section = soup.find('div', id='additionalDescription')
+            if additional_desc_section:
+                desc_body = additional_desc_section.find('div', class_='m-accordion--item--body')
+                if desc_body:
+                    desc_text = desc_body.get_text(separator='\n', strip=True)
+                    product['additional_description'] = desc_text
 
-            # Images
-            for img in soup.find_all('img'):
-                src = img.get('src') or img.get('data-src')
-                if src and ('product' in src.lower() or 'static.mrosupply' in src):
-                    if 'icon' not in src and 'chevron' not in src:
-                        product['images'].append(src)
-
-            # Category - from URL path
-            if len(url_parts) > 4:
-                product['category'] = url_parts[3].replace('-', ' ').title()
+            # Extract documents/software
+            for section in spec_sections:
+                section_head = section.find('button', class_='m-accordion--item--head')
+                if section_head and 'Documents / Software' in section_head.get_text():
+                    doc_body = section.find('div', class_='m-accordion--item--body')
+                    if doc_body:
+                        doc_items = doc_body.find_all('div', class_='documents--item')
+                        for item in doc_items:
+                            link = item.find('a')
+                            if link:
+                                doc_url = link.get('href', '')
+                                doc_name = link.get_text(strip=True)
+                                if doc_url:
+                                    product['documents'].append({
+                                        'name': doc_name,
+                                        'url': doc_url
+                                    })
+                    break
 
             self.success_count += 1
             return product
@@ -253,40 +295,6 @@ class BatchScraper:
                 'timestamp': time.time()
             })
             return None
-
-    def _extract_text(self, soup, selector: str) -> str:
-        """Extract text from element"""
-        try:
-            element = soup.select_one(selector)
-            return element.get_text(strip=True) if element else ''
-        except:
-            return ''
-
-    def _extract_images(self, soup) -> List[str]:
-        """Extract image URLs"""
-        try:
-            images = []
-            for img in soup.select('img.product-image'):
-                src = img.get('src') or img.get('data-src')
-                if src:
-                    images.append(src)
-            return images
-        except:
-            return []
-
-    def _extract_specs(self, soup) -> Dict:
-        """Extract specifications"""
-        try:
-            specs = {}
-            for row in soup.select('table.specs tr'):
-                cells = row.select('td')
-                if len(cells) >= 2:
-                    key = cells[0].get_text(strip=True)
-                    value = cells[1].get_text(strip=True)
-                    specs[key] = value
-            return specs
-        except:
-            return {}
 
     def scrape_batch(self, max_workers: int = 5):
         """
