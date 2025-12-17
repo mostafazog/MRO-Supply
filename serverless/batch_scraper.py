@@ -58,12 +58,9 @@ class BatchScraper:
             logger.warning(f"Could not load config: {e}")
             self.config = None
 
-        # Setup proxy
-        self.proxy_url = self._get_proxy_url()
-        self.proxies = {
-            'http': self.proxy_url,
-            'https': self.proxy_url
-        } if self.proxy_url else None
+        # Setup proxy - DISABLED (GitHub Actions and Azure Functions have dynamic IPs)
+        self.proxy_url = None
+        self.proxies = None
 
         # Statistics
         self.success_count = 0
@@ -73,22 +70,6 @@ class BatchScraper:
         # Results
         self.products = []
         self.failed_urls = []
-
-    def _get_proxy_url(self) -> str:
-        """Get proxy URL from config or environment"""
-        if self.config and hasattr(self.config, 'get_proxy_url'):
-            return self.config.get_proxy_url()
-
-        # Try environment variables
-        host = os.getenv('PROXY_HOST')
-        port = os.getenv('PROXY_PORT')
-        user = os.getenv('PROXY_USER')
-        password = os.getenv('PROXY_PASS')
-
-        if all([host, port, user, password]):
-            return f"http://{user}:{password}@{host}:{port}"
-
-        return None
 
     def generate_urls(self) -> List[str]:
         """
