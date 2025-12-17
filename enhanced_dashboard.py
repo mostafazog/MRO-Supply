@@ -243,10 +243,49 @@ def scraper_status():
             except Exception as e:
                 logger.error(f"Error getting process info: {e}")
 
+        # Add github_scraper progress if available
+        progress_file = Path('scraping_progress.json')
+        if progress_file.exists():
+            try:
+                with open(progress_file, 'r') as f:
+                    progress = json.load(f)
+                status_info['progress'] = progress
+            except Exception as e:
+                logger.error(f"Error reading progress file: {e}")
+
         return jsonify(status_info)
 
     except Exception as e:
         logger.error(f"Error getting scraper status: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/scraper/progress')
+@login_required
+def scraper_progress():
+    """Get detailed scraper progress from scraping_progress.json and scraping_errors.json"""
+    try:
+        response = {
+            'progress': None,
+            'errors': None
+        }
+
+        # Read progress
+        progress_file = Path('scraping_progress.json')
+        if progress_file.exists():
+            with open(progress_file, 'r') as f:
+                response['progress'] = json.load(f)
+
+        # Read errors
+        errors_file = Path('scraping_errors.json')
+        if errors_file.exists():
+            with open(errors_file, 'r') as f:
+                response['errors'] = json.load(f)
+
+        return jsonify(response)
+
+    except Exception as e:
+        logger.error(f"Error getting scraper progress: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -925,8 +964,17 @@ def distributed_summary():
 # ========== HELPER FUNCTIONS ==========
 
 def get_scraper_pid():
-    """Get the PID of the running scraper"""
+    """Get the PID of the running scraper (checks both old and new pid files)"""
     try:
+        # Check new github_scraper.pid first
+        github_scraper_pid = Path('github_scraper.pid')
+        if github_scraper_pid.exists():
+            with open(github_scraper_pid, 'r') as f:
+                pid = int(f.read().strip())
+            if is_process_running(pid):
+                return pid
+
+        # Fall back to old scraper.pid
         if SCRAPER_PID_FILE.exists():
             with open(SCRAPER_PID_FILE, 'r') as f:
                 pid = int(f.read().strip())
