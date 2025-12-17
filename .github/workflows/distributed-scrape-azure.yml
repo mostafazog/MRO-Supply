@@ -112,23 +112,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Configure proxy
-        env:
-          PROXY_HOST: ${{ secrets.PROXY_HOST }}
-          PROXY_PORT: ${{ secrets.PROXY_PORT }}
-          PROXY_USER: ${{ secrets.PROXY_USER }}
-          PROXY_PASS: ${{ secrets.PROXY_PASS }}
-        run: |
-          cat > .env << EOF
-          PROXY_HOST=${PROXY_HOST}
-          PROXY_PORT=${PROXY_PORT}
-          PROXY_USER=${PROXY_USER}
-          PROXY_PASS=${PROXY_PASS}
-          BATCH_ID=${{ matrix.batch_id }}
-          BATCH_SIZE=${{ github.event.inputs.batch_size }}
-          WORKERS=3
-          EOF
-
       - name: Scrape batch
         id: scrape
         run: |
