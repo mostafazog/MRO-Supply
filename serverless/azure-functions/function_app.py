@@ -66,24 +66,68 @@ def scrape_product(url: str) -> Dict:
                 'success': False
             }
 
-        # Parse HTML
-        soup = BeautifulSoup(response.content, 'lxml')
+        # Parse HTML - use html.parser like main scraper
+        soup = BeautifulSoup(response.content, 'html.parser')
 
-        # Extract product data (adapt to actual site structure)
+        # Extract product data using same logic as main scraper
         product = {
             'url': url,
-            'title': extract_text(soup, 'h1.product-title'),
-            'sku': extract_text(soup, 'span.sku'),
-            'price': extract_text(soup, 'span.price'),
-            'description': extract_text(soup, 'div.description'),
-            'brand': extract_text(soup, 'span.brand'),
-            'category': extract_text(soup, 'span.category'),
-            'images': extract_images(soup),
-            'specifications': extract_specs(soup),
-            'availability': extract_text(soup, 'span.availability'),
+            'title': '',
+            'sku': '',
+            'price': '',
+            'availability': '',
+            'description': '',
+            'specifications': [],
+            'images': [],
+            'category': '',
+            'brand': '',
             'success': True,
             'scraped_at': time.time()
         }
+
+        # Title - use first h1
+        title_tag = soup.find('h1')
+        if title_tag:
+            product['title'] = title_tag.get_text(strip=True)
+
+        # SKU - extract from URL
+        url_parts = url.rstrip('/').split('/')
+        if url_parts:
+            last_part = url_parts[-1]
+            if '_' in last_part:
+                product['sku'] = last_part.split('_')[0]
+
+        # Price
+        price_tag = soup.find('p', class_='price')
+        if price_tag:
+            product['price'] = price_tag.get_text(strip=True)
+
+        # Availability
+        avail_div = soup.find('div', class_=lambda x: x and 'availability' in x.lower() if x else False)
+        if avail_div:
+            product['availability'] = avail_div.get_text(strip=True)
+
+        # Description - from meta tag
+        meta_desc = soup.find('meta', attrs={'name': 'description'})
+        if meta_desc:
+            product['description'] = meta_desc.get('content', '')
+
+        # Brand - extract from URL
+        if url_parts and '_' in url_parts[-1]:
+            parts = url_parts[-1].split('_')
+            if len(parts) >= 3:
+                product['brand'] = parts[-1].replace('-', ' ').title()
+
+        # Images
+        for img in soup.find_all('img'):
+            src = img.get('src') or img.get('data-src')
+            if src and ('product' in src.lower() or 'static.mrosupply' in src):
+                if 'icon' not in src and 'chevron' not in src:
+                    product['images'].append(src)
+
+        # Category - from URL path
+        if len(url_parts) > 4:
+            product['category'] = url_parts[3].replace('-', ' ').title()
 
         return product
 
