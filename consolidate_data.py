@@ -31,9 +31,10 @@ def consolidate_data():
     all_products = {}
     duplicate_count = 0
     error_count = 0
+    skipped_errors = 0
 
-    # Find all JSON files
-    json_files = list(GITHUB_DATA_DIR.glob('**/*.json'))
+    # Find all JSON files (exclude metadata files)
+    json_files = [f for f in GITHUB_DATA_DIR.glob('**/*.json') if 'metadata' not in f.name]
     print(f"Found {len(json_files)} JSON files")
 
     for json_file in json_files:
@@ -52,10 +53,21 @@ def consolidate_data():
             else:
                 continue
 
-            # Add products
+            # Add products (SKIP ERRORS!)
             for product in products:
                 if isinstance(product, dict):
                     url = product.get('url', '')
+
+                    # Skip products with errors
+                    if 'error' in product:
+                        skipped_errors += 1
+                        continue
+
+                    # Skip products without name (incomplete data)
+                    if not product.get('name'):
+                        skipped_errors += 1
+                        continue
+
                     if url:
                         if url in all_products:
                             duplicate_count += 1
@@ -67,9 +79,10 @@ def consolidate_data():
             print(f"  ⚠️  Error reading {json_file.name}: {e}")
 
     print(f"\n{'='*60}")
-    print(f"Products found: {len(all_products):,}")
-    print(f"Duplicates skipped: {duplicate_count:,}")
-    print(f"Errors: {error_count}")
+    print(f"✅ Successful products: {len(all_products):,}")
+    print(f"⏭️  Duplicates skipped: {duplicate_count:,}")
+    print(f"❌ Errors/incomplete skipped: {skipped_errors:,}")
+    print(f"⚠️  File read errors: {error_count}")
 
     if not all_products:
         print("❌ No products found!")
