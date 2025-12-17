@@ -126,8 +126,8 @@ sudo systemctl status mrosupply-scraper
 2. **Gmail Account (for notifications)**
    - Enable 2-Step Verification
    - Generate App Password
-   - **Already configured:** `zoghlamimustapha16@gmail.com`
-   - **App password:** `mxnh dkwy aidc zdru`
+   - **Already configured:** `your_email@gmail.com`
+   - **App password:** `your_gmail_app_password`
 
 ### Option-Specific Requirements:
 
@@ -326,9 +326,9 @@ PROXY_PASS=your_webshare_password
 # Email Notifications (Gmail)
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
-SMTP_USER=zoghlamimustapha16@gmail.com
-SMTP_PASS=mxnh dkwy aidc zdru
-NOTIFICATION_EMAIL=zoghlamimustapha16@gmail.com
+SMTP_USER=your_email@gmail.com
+SMTP_PASS=your_gmail_app_password
+NOTIFICATION_EMAIL=your_email@gmail.com
 
 # Performance Tuning
 WORKERS=20                     # Concurrent workers (10-50)

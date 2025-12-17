@@ -99,7 +99,7 @@ def get_subscription_info():
         print("To check your bandwidth usage (remaining of 10GB):")
         print()
         print("  1. Visit: https://proxy.webshare.io/")
-        print("  2. Log in with: zoghlamimustapha16@gmail.com")
+        print("  2. Log in with your Webshare account")
         print("  3. Go to Dashboard → Bandwidth Usage")
         print()
         print("Your dashboard will show:")

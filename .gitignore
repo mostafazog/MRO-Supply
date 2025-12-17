@@ -29,6 +29,8 @@ example_output/
 products_*/
 *.json
 *.csv
+all_product_urls_*.txt
+url_extraction_summary_*.txt
 
 # IDE
 .vscode/

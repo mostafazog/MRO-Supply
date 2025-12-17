@@ -19,8 +19,8 @@
 3. Click "Generate"
 
 
-zoghlamimustapha16@gmail.com
-mxnh dkwy aidc zdru
+your_email@gmail.com
+your_gmail_app_password
 4. COPY the 16-character password (like: abcd efgh ijkl mnop)
 5. Save it - you'll need it later!
 ```

@@ -7,8 +7,8 @@ Your Webshare rotating residential proxy is configured and working!
 ### Proxy Details
 - **Host**: `p.webshare.io`
 - **Port**: `10000`
-- **Username**: `skovjwwh-1`
-- **Password**: `4hkhpysgjvga`
+- **Username**: `your_webshare_username`
+- **Password**: `your_webshare_password`
 - **Type**: Rotating Residential
 - **Available IPs**: 6,652,539 US residential IPs
 - **Status**: ✅ **VERIFIED WORKING** with mrosupply.com

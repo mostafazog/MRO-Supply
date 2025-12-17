@@ -26,11 +26,12 @@ def main():
     print(f"✅ Found {len(urls)} failed URLs to retry")
     
     # Initialize scraper with optimized settings for retries
+    import os
     scraper = RotatingResidentialScraper(
-        proxy_host='p.webshare.io',
-        proxy_port=10000,
-        proxy_user='skovjwwh-1',
-        proxy_pass='4hkhpysgjvga',
+        proxy_host=os.getenv('PROXY_HOST', 'p.webshare.io'),
+        proxy_port=int(os.getenv('PROXY_PORT', '10000')),
+        proxy_user=os.getenv('PROXY_USER', 'your_username'),
+        proxy_pass=os.getenv('PROXY_PASS', 'your_password'),
         output_dir=output_dir,
         workers=5,  # Fewer workers for better success rate
         delay=0.5   # Longer delay for retries

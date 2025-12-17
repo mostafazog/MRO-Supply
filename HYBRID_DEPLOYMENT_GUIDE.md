@@ -85,8 +85,8 @@
 
 ### 3. Gmail Account (for notifications)
 
-- **Already configured:** zoghlamimustapha16@gmail.com
-- **App password:** mxnh dkwy aidc zdru
+- **Already configured:** your_email@gmail.com
+- **App password:** your_gmail_app_password
 
 ### 4. Webshare Proxy Account
 
@@ -366,17 +366,17 @@ GitHub Secrets are encrypted environment variables used in workflows.
 
 #### Secret 9: SMTP_USER
 - **Name:** `SMTP_USER`
-- **Value:** `zoghlamimustapha16@gmail.com`
+- **Value:** `your_email@gmail.com`
 - Click **Add secret**
 
 #### Secret 10: SMTP_PASS
 - **Name:** `SMTP_PASS`
-- **Value:** `mxnh dkwy aidc zdru`
+- **Value:** `your_gmail_app_password`
 - Click **Add secret**
 
 #### Secret 11: NOTIFICATION_EMAIL
 - **Name:** `NOTIFICATION_EMAIL`
-- **Value:** `zoghlamimustapha16@gmail.com` (or where you want notifications)
+- **Value:** `your_email@gmail.com` (or where you want notifications)
 - Click **Add secret**
 
 **Verify all secrets are added:**
@@ -458,7 +458,7 @@ You'll see the workflow run appear with status: **🟡 In progress**
    - Generates summary statistics
 
 5. **notify** (1 minute)
-   - Sends completion email to zoghlamimustapha16@gmail.com
+   - Sends completion email to your_email@gmail.com
 
 **Total Duration:** 2-3 hours
 
@@ -519,7 +519,7 @@ Progress: 200/14950 batches (198 success, 2 failed)
 
 ### Option 4: Email Notifications
 
-You'll receive emails at: **zoghlamimustapha16@gmail.com**
+You'll receive emails at: **your_email@gmail.com**
 
 **Email 1: Startup (within 1 minute)**
 ```
@@ -750,12 +750,12 @@ az functionapp config appsettings set \
 
    msg = MIMEText("Test")
    msg['Subject'] = 'Test'
-   msg['From'] = 'zoghlamimustapha16@gmail.com'
-   msg['To'] = 'zoghlamimustapha16@gmail.com'
+   msg['From'] = 'your_email@gmail.com'
+   msg['To'] = 'your_email@gmail.com'
 
    with smtplib.SMTP('smtp.gmail.com', 587) as server:
        server.starttls()
-       server.login('zoghlamimustapha16@gmail.com', 'mxnh dkwy aidc zdru')
+       server.login('your_email@gmail.com', 'your_gmail_app_password')
        server.send_message(msg)
    print("✅ Email sent successfully")
    EOF

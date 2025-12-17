@@ -144,8 +144,8 @@ Your request: "i want to add github action to scrapy and Azure Functions (The Se
 - **Cost:** ~$25 for 1.5M requests
 
 #### 4. Gmail (Already Done!)
-- Email: zoghlamimustapha16@gmail.com
-- App password: mxnh dkwy aidc zdru
+- Email: your_email@gmail.com
+- App password: your_gmail_app_password
 - **Cost:** $0
 
 ---
@@ -236,9 +236,9 @@ git push -u origin main
 | `PROXY_PASS` | (your Webshare password) |
 | `SMTP_HOST` | `smtp.gmail.com` |
 | `SMTP_PORT` | `587` |
-| `SMTP_USER` | `zoghlamimustapha16@gmail.com` |
-| `SMTP_PASS` | `mxnh dkwy aidc zdru` |
-| `NOTIFICATION_EMAIL` | `zoghlamimustapha16@gmail.com` |
+| `SMTP_USER` | `your_email@gmail.com` |
+| `SMTP_PASS` | `your_gmail_app_password` |
+| `NOTIFICATION_EMAIL` | `your_email@gmail.com` |
 
 ### Step 3: Run Workflow (5 minutes)
 

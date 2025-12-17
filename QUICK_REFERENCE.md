@@ -300,9 +300,9 @@ PROXY_PASS=your_webshare_password
 # Email (Gmail)
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
-SMTP_USER=zoghlamimustapha16@gmail.com
-SMTP_PASS=mxnh dkwy aidc zdru
-NOTIFICATION_EMAIL=zoghlamimustapha16@gmail.com
+SMTP_USER=your_email@gmail.com
+SMTP_PASS=your_gmail_app_password
+NOTIFICATION_EMAIL=your_email@gmail.com
 
 # Performance
 WORKERS=20              # Concurrent workers (10-50)
@@ -340,9 +340,9 @@ Required secrets in GitHub repository settings:
 | `PROXY_PASS` | Webshare password | `your_password` |
 | `SMTP_HOST` | Gmail SMTP | `smtp.gmail.com` |
 | `SMTP_PORT` | SMTP port | `587` |
-| `SMTP_USER` | Gmail address | `zoghlamimustapha16@gmail.com` |
-| `SMTP_PASS` | Gmail app password | `mxnh dkwy aidc zdru` |
-| `NOTIFICATION_EMAIL` | Alert recipient | `zoghlamimustapha16@gmail.com` |
+| `SMTP_USER` | Gmail address | `your_email@gmail.com` |
+| `SMTP_PASS` | Gmail app password | `your_gmail_app_password` |
+| `NOTIFICATION_EMAIL` | Alert recipient | `your_email@gmail.com` |
 
 ---
 

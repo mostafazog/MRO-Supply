@@ -683,11 +683,12 @@ def main():
     args = parser.parse_args()
 
     # Initialize scraper with rotating residential proxy
+    import os
     scraper = RotatingResidentialScraper(
-        proxy_host='p.webshare.io',
-        proxy_port=10000,
-        proxy_user='skovjwwh-1',
-        proxy_pass='4hkhpysgjvga',
+        proxy_host=os.getenv('PROXY_HOST', 'p.webshare.io'),
+        proxy_port=int(os.getenv('PROXY_PORT', '10000')),
+        proxy_user=os.getenv('PROXY_USER', 'your_username'),
+        proxy_pass=os.getenv('PROXY_PASS', 'your_password'),
         output_dir=args.output_dir,
         workers=args.workers,
         delay=args.delay,
