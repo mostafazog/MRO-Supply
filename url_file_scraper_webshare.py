@@ -158,19 +158,21 @@ class URLFileScraper:
     def save_checkpoint(self, product: dict):
         """Save single product to checkpoint (append mode)"""
         try:
-            # Load existing data
-            if self.checkpoint_file.exists():
-                with open(self.checkpoint_file, 'r') as f:
-                    data = json.load(f)
-            else:
-                data = {}
+            # Use lock to prevent race condition with multiple workers
+            with self.lock:
+                # Load existing data
+                if self.checkpoint_file.exists():
+                    with open(self.checkpoint_file, 'r') as f:
+                        data = json.load(f)
+                else:
+                    data = {}
 
-            # Add new product
-            data[product['url']] = product
+                # Add new product
+                data[product['url']] = product
 
-            # Save back
-            with open(self.checkpoint_file, 'w') as f:
-                json.dump(data, f, indent=2)
+                # Save back
+                with open(self.checkpoint_file, 'w') as f:
+                    json.dump(data, f, indent=2)
 
         except Exception as e:
             logger.error(f"Error saving checkpoint: {e}")

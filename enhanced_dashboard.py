@@ -115,12 +115,17 @@ def start_scraper():
         workers = data.get('workers', 10)
 
         # Build command
-        cmd = ['python3', script]
+        # Handle script parameter that may include arguments (e.g., "url_file_scraper_webshare.py --url-file file.txt")
+        script_parts = script.split()
+        cmd = ['python3'] + script_parts
 
-        if max_products:
-            cmd.extend(['--max-products', str(max_products)])
-        if workers:
+        # Only add workers if not already in script_parts
+        if workers and '--workers' not in script:
             cmd.extend(['--workers', str(workers)])
+
+        # Only add max_products if not already in script_parts
+        if max_products and '--max-products' not in script:
+            cmd.extend(['--max-products', str(max_products)])
 
         # Start scraper in background
         log_file = OUTPUT_DIR / 'scraper_latest.log'
@@ -330,6 +335,49 @@ def tail_log():
     except Exception as e:
         logger.error(f"Error tailing log: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/logs/clear', methods=['POST'])
+@login_required
+def clear_logs():
+    """Clear the scraper log file"""
+    try:
+        # Find latest log file
+        log_files = sorted(OUTPUT_DIR.glob('scraper_log_*.log'), key=lambda x: x.stat().st_mtime)
+
+        if not log_files:
+            # Clear the latest log
+            latest_log = OUTPUT_DIR / 'scraper_latest.log'
+            if latest_log.exists():
+                with open(latest_log, 'w') as f:
+                    f.write('')
+                logger.info("Cleared scraper_latest.log")
+                return jsonify({
+                    'success': True,
+                    'message': 'Log file cleared successfully'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': 'No log file found'
+                })
+        else:
+            # Clear the most recent log file
+            log_file = log_files[-1]
+            with open(log_file, 'w') as f:
+                f.write('')
+            logger.info(f"Cleared {log_file.name}")
+            return jsonify({
+                'success': True,
+                'message': f'Cleared {log_file.name}'
+            })
+
+    except Exception as e:
+        logger.error(f"Error clearing log: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'Error: {str(e)}'
+        }), 500
 
 
 # ========== FILE DOWNLOADS ==========
@@ -656,6 +704,67 @@ def github_workflow_details(run_id):
     except Exception as e:
         logger.error(f"Error getting workflow details: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/github/trigger', methods=['POST'])
+@login_required
+def trigger_github_workflow():
+    """Trigger GitHub Actions workflow"""
+    try:
+        github_token = os.getenv('GITHUB_TOKEN', '')
+        repo = os.getenv('GITHUB_REPO', 'mostafazog/MRO-Supply')
+
+        if not github_token:
+            return jsonify({
+                'success': False,
+                'message': 'GITHUB_TOKEN not configured'
+            }), 500
+
+        # Get optional parameters from request
+        data = request.get_json() or {}
+        total_products = data.get('total_products', '1508714')
+        batch_size = data.get('batch_size', '100')
+        use_azure = data.get('use_azure_functions', 'true')
+        github_workers = data.get('github_workers', '50')
+
+        # Trigger workflow_dispatch event
+        url = f'https://api.github.com/repos/{repo}/actions/workflows/distributed-scrape-azure.yml/dispatches'
+        headers = {
+            'Authorization': f'token {github_token}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+
+        # Trigger on main branch with inputs
+        payload = {
+            'ref': 'main',
+            'inputs': {
+                'total_products': str(total_products),
+                'batch_size': str(batch_size),
+                'use_azure_functions': str(use_azure),
+                'github_workers': str(github_workers)
+            }
+        }
+
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+
+        if response.status_code == 204:
+            logger.info(f"GitHub Actions workflow triggered: {github_workers} workers, {total_products} products")
+            return jsonify({
+                'success': True,
+                'message': f'GitHub Actions workflow triggered with {github_workers} workers'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': f'GitHub API returned {response.status_code}: {response.text}'
+            }), response.status_code
+
+    except Exception as e:
+        logger.error(f"Error triggering GitHub workflow: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'Error: {str(e)}'
+        }), 500
 
 
 # ========== AZURE FUNCTIONS MONITORING ==========

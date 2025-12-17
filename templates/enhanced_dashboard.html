@@ -231,6 +231,9 @@
                                 <button class="btn btn-sm btn-secondary" onclick="toggleAutoRefresh()">
                                     <i class="bi bi-stopwatch"></i> <span id="auto-refresh-text">Auto: OFF</span>
                                 </button>
+                                <button class="btn btn-sm btn-danger" onclick="clearLogs()">
+                                    <i class="bi bi-trash"></i> Clear Logs
+                                </button>
                             </div>
                         </div>
                         <div class="log-viewer" id="log-viewer">
@@ -335,6 +338,37 @@
                                 <i class="bi bi-check-circle metric-icon text-success"></i>
                                 <div class="metric-value" id="products-count">-</div>
                                 <div class="metric-label">Products Scraped</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Distributed Systems Section -->
+                <div class="row mt-4">
+                    <div class="col-md-6">
+                        <div class="card metric-card">
+                            <div class="card-body">
+                                <h5 class="card-title">
+                                    <i class="bi bi-github"></i> GitHub Actions
+                                    <button class="btn btn-sm btn-success float-end" onclick="triggerGitHubActions()">
+                                        <i class="bi bi-play-fill"></i> Trigger Workflow
+                                    </button>
+                                </h5>
+                                <div id="github-status">
+                                    <p class="text-muted">Loading...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card metric-card">
+                            <div class="card-body">
+                                <h5 class="card-title">
+                                    <i class="bi bi-cloud"></i> Azure Functions
+                                </h5>
+                                <div id="azure-status">
+                                    <p class="text-muted">Loading...</p>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -523,6 +557,31 @@
             }
         }
 
+        // Clear logs
+        async function clearLogs() {
+            if (!confirm('Are you sure you want to clear the log file? This cannot be undone.')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/logs/clear', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'}
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    showToast('Success', result.message, 'success');
+                    refreshLogs();
+                } else {
+                    showToast('Error', result.message, 'error');
+                }
+            } catch (error) {
+                showToast('Error', 'Failed to clear logs: ' + error.message, 'error');
+            }
+        }
+
         // Load files list
         async function loadFiles() {
             try {
@@ -616,6 +675,103 @@
             }
         }
 
+        // Update GitHub Actions status
+        async function updateGitHubStatus() {
+            try {
+                const response = await fetch('/api/github/workflows');
+                const data = await response.json();
+
+                const container = document.getElementById('github-status');
+
+                if (!data.configured) {
+                    container.innerHTML = '<div class="alert alert-warning"><i class="bi bi-exclamation-triangle"></i> GitHub token not configured</div>';
+                    return;
+                }
+
+                if (data.workflows && data.workflows.length > 0) {
+                    let html = '<table class="table table-sm"><thead><tr><th>Run #</th><th>Status</th><th>Link</th></tr></thead><tbody>';
+                    data.workflows.slice(0, 3).forEach(w => {
+                        const statusBadge = w.status === 'completed' ?
+                            `<span class="badge bg-${w.conclusion === 'success' ? 'success' : 'danger'}">${w.conclusion}</span>` :
+                            `<span class="badge bg-warning">${w.status}</span>`;
+                        html += `<tr><td>#${w.run_number}</td><td>${statusBadge}</td><td><a href="${w.html_url}" target="_blank"><i class="bi bi-box-arrow-up-right"></i></a></td></tr>`;
+                    });
+                    html += '</tbody></table>';
+                    container.innerHTML = html;
+                } else {
+                    container.innerHTML = '<p class="text-muted">No workflow runs found</p>';
+                }
+            } catch (error) {
+                console.error('Error updating GitHub status:', error);
+                document.getElementById('github-status').innerHTML = '<p class="text-danger">Error loading status</p>';
+            }
+        }
+
+        // Update Azure Functions status
+        async function updateAzureStatus() {
+            try {
+                const response = await fetch('/api/azure/status');
+                const data = await response.json();
+
+                const container = document.getElementById('azure-status');
+
+                if (!data.configured) {
+                    container.innerHTML = '<div class="alert alert-warning"><i class="bi bi-exclamation-triangle"></i> Azure URL not configured</div>';
+                    return;
+                }
+
+                const statusColor = data.status === 'healthy' ? 'success' :
+                                   data.status === 'unhealthy' ? 'danger' : 'warning';
+
+                let html = `
+                    <div class="alert alert-${statusColor}">
+                        <strong>Status:</strong> ${data.status.toUpperCase()}<br>
+                        <strong>URL:</strong> <small>${data.url}</small>
+                    </div>
+                `;
+
+                if (data.error) {
+                    html += `<p class="text-muted"><small>Error: ${data.error}</small></p>`;
+                }
+
+                container.innerHTML = html;
+            } catch (error) {
+                console.error('Error updating Azure status:', error);
+                document.getElementById('azure-status').innerHTML = '<p class="text-danger">Error loading status</p>';
+            }
+        }
+
+        // Trigger GitHub Actions workflow
+        async function triggerGitHubActions() {
+            if (!confirm('Start GitHub Actions workflow with 50 workers + Azure Functions?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/github/trigger', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        total_products: '1508714',
+                        batch_size: '100',
+                        use_azure_functions: 'true',
+                        github_workers: '50'
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    showToast('Success', result.message, 'success');
+                    setTimeout(updateGitHubStatus, 2000);
+                } else {
+                    showToast('Error', result.message, 'error');
+                }
+            } catch (error) {
+                showToast('Error', 'Failed to trigger workflow: ' + error.message, 'error');
+            }
+        }
+
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
             updateScraperStatus();
@@ -626,6 +782,8 @@
             // Auto-refresh every 5 seconds
             setInterval(updateScraperStatus, 5000);
             setInterval(updateSystemStats, 10000);
+            setInterval(updateGitHubStatus, 15000);
+            setInterval(updateAzureStatus, 15000);
 
             // Tab change handlers
             document.getElementById('logs-tab').addEventListener('shown.bs.tab', function() {
@@ -634,6 +792,11 @@
 
             document.getElementById('files-tab').addEventListener('shown.bs.tab', function() {
                 loadFiles();
+            });
+
+            document.getElementById('monitor-tab').addEventListener('shown.bs.tab', function() {
+                updateGitHubStatus();
+                updateAzureStatus();
             });
         });
     </script>

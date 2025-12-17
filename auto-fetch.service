@@ -1,0 +1,16 @@
+[Unit]
+Description=MRO Supply Auto-Fetch Service
+After=network.target
+
+[Service]
+Type=simple
+User=azureuser
+WorkingDirectory=/home/azureuser/mrosupply-scraper
+Environment="GITHUB_TOKEN=YOUR_GITHUB_TOKEN_HERE"
+Environment="GITHUB_REPO=mostafazog/MRO-Supply"
+ExecStart=/usr/bin/python3 /home/azureuser/mrosupply-scraper/auto_fetch_service.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
