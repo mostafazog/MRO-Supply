@@ -2,6 +2,7 @@
 """
 Enhanced Web Dashboard for MRO Supply Scraper
 Flask-based monitoring and control interface with full management capabilities
+Includes GitHub Actions and Azure Functions monitoring
 """
 
 import os
@@ -10,6 +11,7 @@ import time
 import subprocess
 import signal
 import logging
+import requests
 from pathlib import Path
 from datetime import datetime
 from functools import wraps
@@ -533,6 +535,281 @@ def api_system():
 
     except Exception as e:
         logger.error(f"Error getting system info: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ========== GITHUB ACTIONS MONITORING ==========
+
+@app.route('/api/github/workflows')
+@login_required
+def github_workflows():
+    """Get GitHub Actions workflow status"""
+    try:
+        github_token = os.getenv('GITHUB_TOKEN', '')
+        repo = os.getenv('GITHUB_REPO', 'mostafazog/MRO-Supply')
+
+        if not github_token:
+            return jsonify({
+                'error': 'GITHUB_TOKEN not configured',
+                'configured': False
+            })
+
+        # Get latest workflow runs
+        url = f'https://api.github.com/repos/{repo}/actions/runs'
+        headers = {
+            'Authorization': f'token {github_token}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+
+        response = requests.get(url, headers=headers, params={'per_page': 5}, timeout=10)
+
+        if response.status_code != 200:
+            return jsonify({
+                'error': f'GitHub API returned {response.status_code}',
+                'configured': True
+            }), response.status_code
+
+        data = response.json()
+
+        # Parse workflow runs
+        workflows = []
+        for run in data.get('workflow_runs', []):
+            workflows.append({
+                'id': run['id'],
+                'name': run['name'],
+                'status': run['status'],
+                'conclusion': run.get('conclusion'),
+                'created_at': run['created_at'],
+                'updated_at': run['updated_at'],
+                'html_url': run['html_url'],
+                'run_number': run['run_number']
+            })
+
+        return jsonify({
+            'configured': True,
+            'workflows': workflows,
+            'total_count': data.get('total_count', 0)
+        })
+
+    except Exception as e:
+        logger.error(f"Error getting GitHub workflows: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/github/workflow/<int:run_id>')
+@login_required
+def github_workflow_details(run_id):
+    """Get detailed information about a specific workflow run"""
+    try:
+        github_token = os.getenv('GITHUB_TOKEN', '')
+        repo = os.getenv('GITHUB_REPO', 'mostafazog/MRO-Supply')
+
+        if not github_token:
+            return jsonify({'error': 'GITHUB_TOKEN not configured'}), 500
+
+        headers = {
+            'Authorization': f'token {github_token}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+
+        # Get workflow run details
+        url = f'https://api.github.com/repos/{repo}/actions/runs/{run_id}'
+        response = requests.get(url, headers=headers, timeout=10)
+
+        if response.status_code != 200:
+            return jsonify({'error': f'GitHub API returned {response.status_code}'}), response.status_code
+
+        run_data = response.json()
+
+        # Get jobs for this run
+        jobs_url = f'https://api.github.com/repos/{repo}/actions/runs/{run_id}/jobs'
+        jobs_response = requests.get(jobs_url, headers=headers, timeout=10)
+
+        jobs = []
+        if jobs_response.status_code == 200:
+            for job in jobs_response.json().get('jobs', []):
+                jobs.append({
+                    'id': job['id'],
+                    'name': job['name'],
+                    'status': job['status'],
+                    'conclusion': job.get('conclusion'),
+                    'started_at': job.get('started_at'),
+                    'completed_at': job.get('completed_at'),
+                    'html_url': job['html_url']
+                })
+
+        return jsonify({
+            'run': {
+                'id': run_data['id'],
+                'name': run_data['name'],
+                'status': run_data['status'],
+                'conclusion': run_data.get('conclusion'),
+                'created_at': run_data['created_at'],
+                'updated_at': run_data['updated_at'],
+                'html_url': run_data['html_url'],
+                'run_number': run_data['run_number']
+            },
+            'jobs': jobs,
+            'jobs_count': len(jobs)
+        })
+
+    except Exception as e:
+        logger.error(f"Error getting workflow details: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ========== AZURE FUNCTIONS MONITORING ==========
+
+@app.route('/api/azure/status')
+@login_required
+def azure_status():
+    """Get Azure Functions status"""
+    try:
+        azure_url = os.getenv('AZURE_FUNCTION_URL', 'https://mrosupply-scraper-func.azurewebsites.net')
+
+        # Check health endpoint
+        health_url = f'{azure_url}/api/health'
+
+        try:
+            response = requests.get(health_url, timeout=10)
+
+            if response.status_code == 200:
+                health_data = response.json()
+                return jsonify({
+                    'status': 'healthy',
+                    'url': azure_url,
+                    'timestamp': health_data.get('timestamp'),
+                    'configured': True
+                })
+            else:
+                return jsonify({
+                    'status': 'unhealthy',
+                    'url': azure_url,
+                    'error': f'HTTP {response.status_code}',
+                    'configured': True
+                })
+
+        except requests.exceptions.RequestException as e:
+            return jsonify({
+                'status': 'unreachable',
+                'url': azure_url,
+                'error': str(e),
+                'configured': True
+            })
+
+    except Exception as e:
+        logger.error(f"Error checking Azure status: {e}")
+        return jsonify({'error': str(e), 'configured': False}), 500
+
+
+@app.route('/api/azure/test', methods=['POST'])
+@login_required
+def azure_test_scrape():
+    """Test Azure Functions scraping endpoint"""
+    try:
+        azure_url = os.getenv('AZURE_FUNCTION_URL', 'https://mrosupply-scraper-func.azurewebsites.net')
+        azure_key = os.getenv('AZURE_FUNCTION_KEY', '')
+
+        # Test URL
+        test_urls = ['https://www.mrosupply.com/automation/2302938_ant-gw715153_red-lion-controls/']
+
+        scrape_url = f'{azure_url}/api/scrape'
+        params = {'code': azure_key} if azure_key else {}
+
+        response = requests.post(
+            scrape_url,
+            params=params,
+            json={'urls': test_urls, 'batch_id': 999},
+            timeout=60
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            return jsonify({
+                'success': True,
+                'batch_id': result.get('batch_id'),
+                'total': result.get('total'),
+                'success_count': result.get('success'),
+                'failed_count': result.get('failed'),
+                'test_url': test_urls[0]
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': f'HTTP {response.status_code}',
+                'message': response.text[:200]
+            }), response.status_code
+
+    except Exception as e:
+        logger.error(f"Error testing Azure function: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/distributed/summary')
+@login_required
+def distributed_summary():
+    """Get combined summary of all distributed scraping systems"""
+    try:
+        summary = {
+            'local': {'status': 'unknown'},
+            'github': {'status': 'unknown'},
+            'azure': {'status': 'unknown'}
+        }
+
+        # Local scraper status
+        if is_scraper_running():
+            summary['local'] = {
+                'status': 'running',
+                'pid': get_scraper_pid()
+            }
+        else:
+            summary['local'] = {'status': 'idle'}
+
+        # GitHub Actions status
+        github_token = os.getenv('GITHUB_TOKEN', '')
+        if github_token:
+            try:
+                repo = os.getenv('GITHUB_REPO', 'mostafazog/MRO-Supply')
+                url = f'https://api.github.com/repos/{repo}/actions/runs'
+                headers = {
+                    'Authorization': f'token {github_token}',
+                    'Accept': 'application/vnd.github.v3+json'
+                }
+                response = requests.get(url, headers=headers, params={'per_page': 1}, timeout=10)
+
+                if response.status_code == 200:
+                    runs = response.json().get('workflow_runs', [])
+                    if runs:
+                        latest = runs[0]
+                        summary['github'] = {
+                            'status': latest['status'],
+                            'conclusion': latest.get('conclusion'),
+                            'name': latest['name'],
+                            'run_id': latest['id'],
+                            'url': latest['html_url']
+                        }
+            except Exception as e:
+                logger.error(f"Error getting GitHub status: {e}")
+
+        # Azure Functions status
+        try:
+            azure_url = os.getenv('AZURE_FUNCTION_URL', 'https://mrosupply-scraper-func.azurewebsites.net')
+            response = requests.get(f'{azure_url}/api/health', timeout=10)
+
+            if response.status_code == 200:
+                summary['azure'] = {
+                    'status': 'healthy',
+                    'url': azure_url
+                }
+            else:
+                summary['azure'] = {'status': 'unhealthy'}
+        except Exception:
+            summary['azure'] = {'status': 'unreachable'}
+
+        return jsonify(summary)
+
+    except Exception as e:
+        logger.error(f"Error getting distributed summary: {e}")
         return jsonify({'error': str(e)}), 500
 
 
