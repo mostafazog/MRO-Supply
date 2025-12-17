@@ -1,0 +1,240 @@
+name: Distributed Scraping - Multi-Region Azure Functions
+
+on:
+  workflow_dispatch:
+    inputs:
+      total_products:
+        description: 'Total products to scrape'
+        required: false
+        default: '1508714'
+      batch_size:
+        description: 'Products per batch'
+        required: false
+        default: '100'
+      github_workers:
+        description: 'GitHub Actions workers'
+        required: false
+        default: '50'
+
+env:
+  # Multi-region Azure Functions
+  AZURE_EASTUS_URL: ${{ secrets.AZURE_FUNCTION_URL_EASTUS }}
+  AZURE_EASTUS_KEY: ${{ secrets.AZURE_FUNCTION_KEY_EASTUS }}
+  AZURE_WESTUS_URL: ${{ secrets.AZURE_FUNCTION_URL_WESTUS }}
+  AZURE_WESTUS_KEY: ${{ secrets.AZURE_FUNCTION_KEY_WESTUS }}
+  AZURE_CENTRALUS_URL: ${{ secrets.AZURE_FUNCTION_URL_CENTRALUS }}
+  AZURE_CENTRALUS_KEY: ${{ secrets.AZURE_FUNCTION_KEY_CENTRALUS }}
+  AZURE_NORTHEUROPE_URL: ${{ secrets.AZURE_FUNCTION_URL_NORTHEUROPE }}
+  AZURE_NORTHEUROPE_KEY: ${{ secrets.AZURE_FUNCTION_KEY_NORTHEUROPE }}
+  AZURE_WESTEUROPE_URL: ${{ secrets.AZURE_FUNCTION_URL_WESTEUROPE }}
+  AZURE_WESTEUROPE_KEY: ${{ secrets.AZURE_FUNCTION_KEY_WESTEUROPE }}
+  AZURE_SOUTHEASTASIA_URL: ${{ secrets.AZURE_FUNCTION_URL_SOUTHEASTASIA }}
+  AZURE_SOUTHEASTASIA_KEY: ${{ secrets.AZURE_FUNCTION_KEY_SOUTHEASTASIA }}
+  AZURE_EASTASIA_URL: ${{ secrets.AZURE_FUNCTION_URL_EASTASIA }}
+  AZURE_EASTASIA_KEY: ${{ secrets.AZURE_FUNCTION_KEY_EASTASIA }}
+  AZURE_AUSTRALIAEAST_URL: ${{ secrets.AZURE_FUNCTION_URL_AUSTRALIAEAST }}
+  AZURE_AUSTRALIAEAST_KEY: ${{ secrets.AZURE_FUNCTION_KEY_AUSTRALIAEAST }}
+  AZURE_UKSOUTH_URL: ${{ secrets.AZURE_FUNCTION_URL_UKSOUTH }}
+  AZURE_UKSOUTH_KEY: ${{ secrets.AZURE_FUNCTION_KEY_UKSOUTH }}
+  AZURE_CANADACENTRAL_URL: ${{ secrets.AZURE_FUNCTION_URL_CANADACENTRAL }}
+  AZURE_CANADACENTRAL_KEY: ${{ secrets.AZURE_FUNCTION_KEY_CANADACENTRAL }}
+
+jobs:
+  prepare:
+    name: Prepare Multi-Region Deployment
+    runs-on: ubuntu-latest
+    outputs:
+      github_batches: ${{ steps.calculate.outputs.github_batches }}
+      azure_batches_per_region: ${{ steps.calculate.outputs.azure_batches_per_region }}
+      total_batches: ${{ steps.calculate.outputs.total_batches }}
+      azure_regions: ${{ steps.calculate.outputs.azure_regions }}
+    steps:
+      - name: Calculate distribution
+        id: calculate
+        run: |
+          python3 << 'EOF'
+          import os
+          import json
+
+          total_products = int('${{ github.event.inputs.total_products }}')
+          batch_size = int('${{ github.event.inputs.batch_size }}')
+          github_workers = int('${{ github.event.inputs.github_workers }}')
+
+          # Calculate total batches
+          total_batches = (total_products + batch_size - 1) // batch_size
+
+          # Azure regions
+          azure_regions = [
+              'eastus', 'westus', 'centralus', 'northeurope', 'westeurope',
+              'southeastasia', 'eastasia', 'australiaeast', 'uksouth', 'canadacentral'
+          ]
+
+          # Distribution
+          github_batches = github_workers
+          azure_total_batches = total_batches - github_batches
+          azure_batches_per_region = azure_total_batches // len(azure_regions)
+
+          print(f"Total batches: {total_batches:,}")
+          print(f"GitHub Actions: {github_batches} batches")
+          print(f"Azure Functions: {azure_total_batches:,} batches across {len(azure_regions)} regions")
+          print(f"  Per region: {azure_batches_per_region:,} batches (~{azure_batches_per_region * batch_size:,} products)")
+
+          # Output for GitHub Actions
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"github_batches={json.dumps(list(range(github_batches)))}\n")
+              f.write(f"azure_batches_per_region={azure_batches_per_region}\n")
+              f.write(f"total_batches={total_batches}\n")
+              f.write(f"azure_regions={json.dumps(azure_regions)}\n")
+          EOF
+
+  # GitHub Actions scraping (first N batches)
+  github-scrape:
+    name: Scrape Batch ${{ matrix.batch_id }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      max-parallel: 50
+      matrix:
+        batch_id: ${{ fromJson(needs.prepare.outputs.github_batches) }}
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 lxml
+      - name: Scrape batch
+        run: |
+          python3 serverless/batch_scraper.py \
+            --batch-id ${{ matrix.batch_id }} \
+            --batch-size ${{ github.event.inputs.batch_size }} \
+            --output-dir ./output \
+            --max-workers 3
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: github-batch-${{ matrix.batch_id }}
+          path: output/
+          retention-days: 7
+
+  # Multi-region Azure Functions orchestration
+  orchestrate-azure-multi-region:
+    name: Orchestrate Multi-Region Azure
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send batches to multiple Azure regions
+        run: |
+          python3 << 'EOF'
+          import requests
+          import json
+          import os
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          import time
+
+          # Configuration
+          batch_size = int('${{ github.event.inputs.batch_size }}')
+          total_batches = int('${{ needs.prepare.outputs.total_batches }}')
+          github_batches = int('${{ github.event.inputs.github_workers }}')
+          azure_start_batch = github_batches
+
+          # Azure regions configuration
+          azure_functions = [
+              {'name': 'eastus', 'url': '${{ env.AZURE_EASTUS_URL }}', 'key': '${{ env.AZURE_EASTUS_KEY }}'},
+              {'name': 'westus', 'url': '${{ env.AZURE_WESTUS_URL }}', 'key': '${{ env.AZURE_WESTUS_KEY }}'},
+              {'name': 'centralus', 'url': '${{ env.AZURE_CENTRALUS_URL }}', 'key': '${{ env.AZURE_CENTRALUS_KEY }}'},
+              {'name': 'northeurope', 'url': '${{ env.AZURE_NORTHEUROPE_URL }}', 'key': '${{ env.AZURE_NORTHEUROPE_KEY }}'},
+              {'name': 'westeurope', 'url': '${{ env.AZURE_WESTEUROPE_URL }}', 'key': '${{ env.AZURE_WESTEUROPE_KEY }}'},
+              {'name': 'southeastasia', 'url': '${{ env.AZURE_SOUTHEASTASIA_URL }}', 'key': '${{ env.AZURE_SOUTHEASTASIA_KEY }}'},
+              {'name': 'eastasia', 'url': '${{ env.AZURE_EASTASIA_URL }}', 'key': '${{ env.AZURE_EASTASIA_KEY }}'},
+              {'name': 'australiaeast', 'url': '${{ env.AZURE_AUSTRALIAEAST_URL }}', 'key': '${{ env.AZURE_AUSTRALIAEAST_KEY }}'},
+              {'name': 'uksouth', 'url': '${{ env.AZURE_UKSOUTH_URL }}', 'key': '${{ env.AZURE_UKSOUTH_KEY }}'},
+              {'name': 'canadacentral', 'url': '${{ env.AZURE_CANADACENTRAL_URL }}', 'key': '${{ env.AZURE_CANADACENTRAL_KEY }}'},
+          ]
+
+          # Filter out functions that aren't configured
+          azure_functions = [f for f in azure_functions if f['url'] and f['url'] != '']
+
+          print(f"Configured Azure Functions: {len(azure_functions)} regions")
+          print(f"Sending batches {azure_start_batch} to {total_batches} to Azure Functions")
+
+          def send_batch(batch_id, function_config):
+              """Send a batch to a specific Azure Function"""
+              start_idx = batch_id * batch_size
+              urls = [
+                  f"https://www.mrosupply.com/product/{i:07d}"
+                  for i in range(start_idx, start_idx + batch_size)
+              ]
+
+              function_url = f"{function_config['url']}/api/scrape"
+              params = {'code': function_config['key']} if function_config['key'] else {}
+
+              try:
+                  response = requests.post(
+                      function_url,
+                      params=params,
+                      json={'urls': urls, 'batch_id': batch_id},
+                      timeout=120
+                  )
+
+                  if response.status_code == 200:
+                      result = response.json()
+                      return {
+                          'batch_id': batch_id,
+                          'region': function_config['name'],
+                          'success': True,
+                          'products': result.get('total', 0)
+                      }
+                  else:
+                      return {
+                          'batch_id': batch_id,
+                          'region': function_config['name'],
+                          'success': False,
+                          'error': f'HTTP {response.status_code}'
+                      }
+              except Exception as e:
+                  return {
+                      'batch_id': batch_id,
+                      'region': function_config['name'],
+                      'success': False,
+                      'error': str(e)
+                  }
+
+          # Distribute batches across regions (round-robin)
+          max_concurrent = 100  # Can handle more with multiple regions
+          success_count = 0
+          failed_count = 0
+
+          batches_to_process = list(range(azure_start_batch, total_batches))
+
+          with ThreadPoolExecutor(max_workers=max_concurrent) as executor:
+              futures = {}
+
+              for i, batch_id in enumerate(batches_to_process):
+                  # Round-robin distribution across regions
+                  function_config = azure_functions[i % len(azure_functions)]
+                  future = executor.submit(send_batch, batch_id, function_config)
+                  futures[future] = (batch_id, function_config['name'])
+
+              for future in as_completed(futures):
+                  batch_id, region = futures[future]
+                  try:
+                      result = future.result()
+                      if result['success']:
+                          success_count += 1
+                          if success_count % 100 == 0:
+                              print(f"✓ Progress: {success_count:,}/{len(batches_to_process):,} batches")
+                      else:
+                          failed_count += 1
+                          print(f"✗ Batch {batch_id} ({region}) failed: {result.get('error')}")
+                  except Exception as e:
+                      failed_count += 1
+                      print(f"✗ Batch {batch_id} ({region}) error: {e}")
+
+          print(f"\n✅ Multi-Region Azure deployment completed:")
+          print(f"   Regions used: {len(azure_functions)}")
+          print(f"   Success: {success_count:,} batches")
+          print(f"   Failed: {failed_count:,} batches")
+          print(f"   Total: {len(batches_to_process):,} batches")
+          EOF
