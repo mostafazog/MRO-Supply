@@ -92,12 +92,27 @@ class BatchScraper:
 
     def generate_urls(self) -> List[str]:
         """
-        Generate URLs for this batch
+        Generate URLs for this batch by reading from URL file
 
         Returns:
             List of URLs to scrape
         """
-        base_url = "https://www.mrosupply.com"
+        # Try to find URL file
+        url_file_paths = [
+            'all_product_urls_20251215_230531.txt',
+            '../all_product_urls_20251215_230531.txt',
+            os.path.join(os.path.dirname(__file__), '..', 'all_product_urls_20251215_230531.txt')
+        ]
+
+        url_file = None
+        for path in url_file_paths:
+            if os.path.exists(path):
+                url_file = path
+                break
+
+        if not url_file:
+            logger.error("URL file not found!")
+            return []
 
         # Calculate start and end for this batch
         start_idx = self.batch_id * self.batch_size
@@ -105,15 +120,20 @@ class BatchScraper:
 
         urls = []
 
-        # Generate product URLs (simplified - you'd load from sitemap)
-        # For now, generate sequential product IDs
-        for i in range(start_idx, end_idx):
-            # This is a placeholder - replace with actual URL generation logic
-            product_id = f"product-{i:07d}"
-            url = f"{base_url}/products/{product_id}"
-            urls.append(url)
+        # Read URLs from file
+        try:
+            with open(url_file, 'r') as f:
+                all_urls = [line.strip() for line in f if line.strip()]
 
-        logger.info(f"Generated {len(urls)} URLs for batch {self.batch_id}")
+            # Get URLs for this batch
+            urls = all_urls[start_idx:end_idx]
+
+            logger.info(f"Loaded {len(urls)} URLs for batch {self.batch_id} (lines {start_idx}-{end_idx})")
+
+        except Exception as e:
+            logger.error(f"Failed to read URL file: {e}")
+            return []
+
         return urls
 
     def scrape_product(self, url: str) -> Dict:
@@ -151,22 +171,66 @@ class BatchScraper:
                 return None
 
             # Parse HTML
-            soup = BeautifulSoup(response.content, 'lxml')
+            soup = BeautifulSoup(response.content, 'html.parser')
 
-            # Extract data (adapt to actual site structure)
+            # Extract product data using same logic as main scraper
             product = {
                 'url': url,
-                'title': self._extract_text(soup, 'h1.product-title'),
-                'sku': self._extract_text(soup, 'span.sku'),
-                'price': self._extract_text(soup, 'span.price'),
-                'description': self._extract_text(soup, 'div.description'),
-                'brand': self._extract_text(soup, 'span.brand'),
-                'category': self._extract_text(soup, 'span.category'),
-                'images': self._extract_images(soup),
-                'specifications': self._extract_specs(soup),
-                'availability': self._extract_text(soup, 'span.availability'),
+                'title': '',
+                'sku': '',
+                'price': '',
+                'availability': '',
+                'description': '',
+                'specifications': [],
+                'images': [],
+                'category': '',
+                'brand': '',
                 'scraped_at': time.time()
             }
+
+            # Title - use first h1
+            title_tag = soup.find('h1')
+            if title_tag:
+                product['title'] = title_tag.get_text(strip=True)
+
+            # SKU - extract from URL
+            url_parts = url.rstrip('/').split('/')
+            if url_parts:
+                last_part = url_parts[-1]
+                if '_' in last_part:
+                    product['sku'] = last_part.split('_')[0]
+
+            # Price
+            price_tag = soup.find('p', class_='price')
+            if price_tag:
+                product['price'] = price_tag.get_text(strip=True)
+
+            # Availability
+            avail_div = soup.find('div', class_=lambda x: x and 'availability' in x.lower() if x else False)
+            if avail_div:
+                product['availability'] = avail_div.get_text(strip=True)
+
+            # Description - from meta tag
+            meta_desc = soup.find('meta', attrs={'name': 'description'})
+            if meta_desc:
+                product['description'] = meta_desc.get('content', '')
+
+            # Brand - extract from URL
+            if '_' in url_parts[-1]:
+                parts = url_parts[-1].split('_')
+                if len(parts) >= 3:
+                    product['brand'] = parts[-1].replace('-', ' ').title()
+
+            # Images
+            for img in soup.find_all('img'):
+                src = img.get('src') or img.get('data-src')
+                if src and ('product' in src.lower() or 'static.mrosupply' in src):
+                    if 'icon' not in src and 'chevron' not in src:
+                        product['images'].append(src)
+
+            # Category - from URL path
+            if len(url_parts) > 4:
+                product['category'] = url_parts[3].replace('-', ' ').title()
 
             self.success_count += 1
             return product
