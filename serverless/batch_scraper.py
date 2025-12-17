@@ -93,15 +93,18 @@ class BatchScraper:
     def generate_urls(self) -> List[str]:
         """
         Generate URLs for this batch by reading from URL file
+        Downloads from GitHub releases if not available locally
 
         Returns:
             List of URLs to scrape
         """
-        # Try to find URL file
+        url_filename = 'all_product_urls_20251215_230531.txt'
+
+        # Try to find URL file locally
         url_file_paths = [
-            'all_product_urls_20251215_230531.txt',
-            '../all_product_urls_20251215_230531.txt',
-            os.path.join(os.path.dirname(__file__), '..', 'all_product_urls_20251215_230531.txt')
+            url_filename,
+            f'../{url_filename}',
+            os.path.join(os.path.dirname(__file__), '..', url_filename)
         ]
 
         url_file = None
@@ -110,9 +113,26 @@ class BatchScraper:
                 url_file = path
                 break
 
+        # If not found, download from GitHub releases
         if not url_file:
-            logger.error("URL file not found!")
-            return []
+            logger.info("URL file not found locally, downloading from GitHub...")
+            try:
+                import requests
+                download_url = f"https://github.com/mostafazog/MRO-Supply/releases/download/url-data-v1/{url_filename}"
+                response = requests.get(download_url, timeout=300)
+
+                if response.status_code == 200:
+                    url_file = url_filename
+                    with open(url_file, 'wb') as f:
+                        f.write(response.content)
+                    logger.info(f"Downloaded URL file from GitHub releases")
+                else:
+                    logger.error(f"Failed to download URL file: HTTP {response.status_code}")
+                    return []
+
+            except Exception as e:
+                logger.error(f"Failed to download URL file: {e}")
+                return []
 
         # Calculate start and end for this batch
         start_idx = self.batch_id * self.batch_size
