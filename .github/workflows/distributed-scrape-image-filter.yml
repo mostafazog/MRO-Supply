@@ -1,0 +1,463 @@
+name: Distributed Scraping with Image Filter
+
+on:
+  workflow_dispatch:
+    inputs:
+      total_products:
+        description: 'Total products to scrape'
+        required: false
+        default: '1508714'
+      batch_size:
+        description: 'Products per batch'
+        required: false
+        default: '100'
+      github_workers:
+        description: 'GitHub Actions workers (max 256)'
+        required: false
+        default: '100'
+
+jobs:
+  prepare:
+    name: Prepare Batches
+    runs-on: ubuntu-latest
+    outputs:
+      batches: ${{ steps.create-batches.outputs.batches }}
+      total_batches: ${{ steps.create-batches.outputs.total_batches }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Create batch assignments
+        id: create-batches
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+          import math
+
+          # Configuration
+          total_products = int("${{ github.event.inputs.total_products }}")
+          batch_size = int("${{ github.event.inputs.batch_size }}")
+          github_workers = int("${{ github.event.inputs.github_workers }}")
+
+          total_batches = math.ceil(total_products / batch_size)
+
+          # Limit to max 256 workers for GitHub Actions
+          num_workers = min(github_workers, 256, total_batches)
+
+          print(f"Total products: {total_products:,}")
+          print(f"Batch size: {batch_size}")
+          print(f"Total batches: {total_batches:,}")
+          print(f"GitHub workers: {num_workers}")
+
+          # Distribute batches across workers
+          batches_per_worker = math.ceil(total_batches / num_workers)
+
+          # Create worker assignments (each worker gets multiple batches)
+          workers = []
+          for worker_id in range(num_workers):
+              start_batch = worker_id * batches_per_worker
+              if start_batch < total_batches:
+                  end_batch = min(start_batch + batches_per_worker, total_batches)
+                  workers.append({
+                      'worker_id': worker_id,
+                      'start_batch': start_batch,
+                      'end_batch': end_batch,
+                      'num_batches': end_batch - start_batch
+                  })
+
+          # Output for matrix
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"batches={json.dumps(workers)}\n")
+              f.write(f"total_batches={total_batches}\n")
+
+          print(f"\n✅ Created {len(workers)} workers")
+          print(f"   Each worker: ~{batches_per_worker} batches")
+          EOF
+
+  # GitHub Actions workers (parallel scraping with IMAGE FILTER)
+  scrape-with-filter:
+    name: Worker ${{ matrix.worker.worker_id }} (Batches ${{ matrix.worker.start_batch }}-${{ matrix.worker.end_batch }})
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        worker: ${{ fromJson(needs.prepare.outputs.batches) }}
+      fail-fast: false
+      max-parallel: 100
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install requests beautifulsoup4 lxml
+
+      - name: Download product URLs
+        run: |
+          # Check if URL list exists in repo
+          if [ ! -f "all_product_urls_20251215_230531.json" ]; then
+            echo "⚠️  Product URL list not found in repo"
+            echo "Creating placeholder (will use sequential IDs)"
+            echo "[]" > all_product_urls_20251215_230531.json
+          else
+            echo "✅ Product URL list found"
+          fi
+
+      - name: Scrape with image filter
+        id: scrape
+        run: |
+          python3 << 'EOF'
+          import json
+          import requests
+          from bs4 import BeautifulSoup
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from datetime import datetime
+          from pathlib import Path
+          import time
+
+          # Configuration
+          WORKER_ID = ${{ matrix.worker.worker_id }}
+          START_BATCH = ${{ matrix.worker.start_batch }}
+          END_BATCH = ${{ matrix.worker.end_batch }}
+          BATCH_SIZE = int("${{ github.event.inputs.batch_size }}")
+          MAX_WORKERS = 5  # Parallel requests per batch
+          REQUEST_DELAY = 0.3  # Delay between requests
+
+          print(f"Worker {WORKER_ID}: Processing batches {START_BATCH} to {END_BATCH}")
+
+          # Load product URLs
+          try:
+              with open('all_product_urls_20251215_230531.json', 'r') as f:
+                  all_urls = json.load(f)
+              print(f"✅ Loaded {len(all_urls):,} product URLs")
+              use_url_list = len(all_urls) > 0
+          except:
+              print("⚠️  No URL list, will use sequential product IDs")
+              all_urls = []
+              use_url_list = False
+
+          # Image filtering logic
+          def filter_real_product_images(images):
+              """Filter and return only real product images"""
+              if not images:
+                  return []
+
+              real_images = []
+              exclude_patterns = [
+                  'logo.svg', 'logo.png', 'brands/', '/header/',
+                  'general/logo', 'chevron', 'arrow', 'icon-',
+                  '/icons/', 'banner', 'badge', 'sprite',
+                  '/doc_types/', 'placeholder'
+              ]
+
+              for img in images:
+                  img_lower = img.lower()
+                  if not img or not img.strip():
+                      continue
+
+                  # S3 images (most reliable)
+                  if 's3.amazonaws.com' in img_lower:
+                      real_images.append(img)
+                      continue
+
+                  # Static cache JPG images
+                  if 'static.mrosupply.com' in img_lower and '/cache/' in img_lower:
+                      if '.jpg' in img_lower or '.jpeg' in img_lower:
+                          if not any(pattern in img_lower for pattern in exclude_patterns):
+                              real_images.append(img)
+
+              return real_images
+
+          # Scrape single product
+          def scrape_product(url):
+              """Scrape a single product page"""
+              session = requests.Session()
+              session.headers.update({
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+              })
+
+              try:
+                  response = session.get(url, timeout=30)
+
+                  if response.status_code == 404:
+                      return None
+
+                  if response.status_code != 200:
+                      return None
+
+                  soup = BeautifulSoup(response.text, 'html.parser')
+
+                  # Extract title
+                  title_elem = soup.find('h1')
+                  title = title_elem.get_text(strip=True) if title_elem else None
+
+                  if not title or 'not found' in title.lower():
+                      return None
+
+                  # Extract images
+                  images = []
+                  img_selectors = [
+                      'img.js-magnify',  # S3 product images
+                      'img.product-image',
+                      'img[itemprop="image"]',
+                      '.product-gallery img',
+                      'img[src*="s3.amazonaws"]',
+                      'img[src*="mrosupply.com"]'
+                  ]
+
+                  for selector in img_selectors:
+                      for img in soup.select(selector):
+                          src = img.get('src') or img.get('data-src')
+                          if src:
+                              images.append(src)
+
+                  images = list(set(images))
+                  real_images = filter_real_product_images(images)
+
+                  if not real_images:
+                      return None  # Skip products without images
+
+                  # Extract other data
+                  sku_elem = soup.find('span', {'class': 'sku'})
+                  sku = sku_elem.get_text(strip=True).replace('SKU', '').strip() if sku_elem else url.split('/')[-2].split('_')[0]
+
+                  price_elem = soup.find('span', {'class': 'price'})
+                  price = price_elem.get_text(strip=True) if price_elem else None
+
+                  description_elem = soup.find('div', {'class': 'description'}) or soup.find('div', {'itemprop': 'description'})
+                  description = description_elem.get_text(strip=True) if description_elem else title
+
+                  brand_elem = soup.find('a', {'class': 'brand'}) or soup.find('span', {'itemprop': 'brand'})
+                  brand = brand_elem.get_text(strip=True) if brand_elem else None
+
+                  category_elem = soup.find('nav', {'class': 'breadcrumb'}) or soup.find('ol', {'class': 'breadcrumb'})
+                  category = category_elem.get_text(strip=True) if category_elem else None
+
+                  time.sleep(REQUEST_DELAY)
+
+                  return {
+                      'url': url,
+                      'title': title,
+                      'sku': sku,
+                      'price': price,
+                      'description': description,
+                      'brand': brand,
+                      'category': category,
+                      'images': real_images,
+                      'scraped_at': datetime.now().isoformat()
+                  }
+
+              except Exception as e:
+                  return None
+
+          # Process batches assigned to this worker
+          all_products = []
+          total_attempted = 0
+          total_with_images = 0
+          total_without_images = 0
+
+          for batch_id in range(START_BATCH, END_BATCH):
+              start_idx = batch_id * BATCH_SIZE
+              end_idx = start_idx + BATCH_SIZE
+
+              # Get URLs for this batch
+              if use_url_list:
+                  batch_urls = all_urls[start_idx:min(end_idx, len(all_urls))]
+              else:
+                  # Fallback to sequential product IDs
+                  batch_urls = [f"https://www.mrosupply.com/product/{i:07d}" for i in range(start_idx, end_idx)]
+
+              print(f"  Batch {batch_id}: Scraping {len(batch_urls)} products...")
+
+              # Scrape batch in parallel
+              batch_products = []
+              with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                  futures = {executor.submit(scrape_product, url): url for url in batch_urls}
+
+                  for future in as_completed(futures):
+                      total_attempted += 1
+                      result = future.result()
+                      if result:
+                          batch_products.append(result)
+                          total_with_images += 1
+                      else:
+                          total_without_images += 1
+
+              all_products.extend(batch_products)
+              print(f"    ✅ Found {len(batch_products)} products with images")
+
+          # Save results
+          output_dir = Path('./output')
+          output_dir.mkdir(exist_ok=True)
+
+          products_file = output_dir / f'worker_{WORKER_ID}_products.json'
+          with open(products_file, 'w') as f:
+              json.dump(all_products, f, indent=2)
+
+          # Save summary
+          summary = {
+              'worker_id': WORKER_ID,
+              'start_batch': START_BATCH,
+              'end_batch': END_BATCH,
+              'total_attempted': total_attempted,
+              'products_with_images': total_with_images,
+              'products_without_images': total_without_images,
+              'products_saved': len(all_products),
+              'success_rate': (total_with_images / max(total_attempted, 1)) * 100
+          }
+
+          summary_file = output_dir / f'worker_{WORKER_ID}_summary.json'
+          with open(summary_file, 'w') as f:
+              json.dump(summary, f, indent=2)
+
+          print(f"\n{'='*60}")
+          print(f"Worker {WORKER_ID} Complete")
+          print(f"{'='*60}")
+          print(f"Total attempted: {total_attempted:,}")
+          print(f"With images: {total_with_images:,}")
+          print(f"Without images: {total_without_images:,}")
+          print(f"Success rate: {summary['success_rate']:.1f}%")
+          print(f"Products saved: {len(all_products):,}")
+          EOF
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-${{ matrix.worker.worker_id }}-results
+          path: output/*.json
+          retention-days: 30
+
+  # Aggregate all results
+  aggregate:
+    name: Aggregate Results
+    needs: [prepare, scrape-with-filter]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Aggregate results
+        run: |
+          python3 << 'EOF'
+          import json
+          from pathlib import Path
+
+          print("Aggregating results from all workers...")
+
+          # Collect all products
+          all_products = []
+          all_summaries = []
+
+          artifacts_dir = Path('./artifacts')
+
+          # Process each worker's results
+          for worker_dir in sorted(artifacts_dir.glob('worker-*-results')):
+              worker_id = worker_dir.name.split('-')[1]
+
+              # Load products
+              products_file = worker_dir / f'worker_{worker_id}_products.json'
+              if products_file.exists():
+                  try:
+                      with open(products_file) as f:
+                          products = json.load(f)
+                          all_products.extend(products)
+                          print(f"  Worker {worker_id}: {len(products):,} products")
+                  except Exception as e:
+                      print(f"  ⚠️  Worker {worker_id}: Error reading products - {e}")
+
+              # Load summary
+              summary_file = worker_dir / f'worker_{worker_id}_summary.json'
+              if summary_file.exists():
+                  try:
+                      with open(summary_file) as f:
+                          summary = json.load(f)
+                          all_summaries.append(summary)
+                  except:
+                      pass
+
+          # Calculate totals
+          total_attempted = sum(s['total_attempted'] for s in all_summaries)
+          total_with_images = sum(s['products_with_images'] for s in all_summaries)
+          total_without_images = sum(s['products_without_images'] for s in all_summaries)
+          success_rate = (total_with_images / max(total_attempted, 1)) * 100
+
+          # Save consolidated products
+          with open('consolidated_products_with_images.json', 'w') as f:
+              json.dump(all_products, f, indent=2)
+
+          # Create final summary
+          final_summary = {
+              'total_workers': len(all_summaries),
+              'total_attempted': total_attempted,
+              'products_with_images': total_with_images,
+              'products_without_images': total_without_images,
+              'products_saved': len(all_products),
+              'success_rate': success_rate,
+              'worker_summaries': all_summaries
+          }
+
+          with open('final_summary.json', 'w') as f:
+              json.dump(final_summary, f, indent=2)
+
+          # Create report
+          with open('SCRAPING_REPORT.md', 'w') as f:
+              f.write(f"# Image-Filtered Scraping Results\n\n")
+              f.write(f"## Summary\n\n")
+              f.write(f"- **Total products attempted**: {total_attempted:,}\n")
+              f.write(f"- **Products WITH images**: {total_with_images:,}\n")
+              f.write(f"- **Products WITHOUT images**: {total_without_images:,}\n")
+              f.write(f"- **Success rate**: {success_rate:.1f}%\n")
+              f.write(f"- **Products saved**: {len(all_products):,}\n")
+              f.write(f"- **Workers used**: {len(all_summaries)}\n\n")
+              f.write(f"## Worker Details\n\n")
+              for s in sorted(all_summaries, key=lambda x: x['worker_id']):
+                  f.write(f"### Worker {s['worker_id']}\n")
+                  f.write(f"- Batches: {s['start_batch']}-{s['end_batch']}\n")
+                  f.write(f"- Products with images: {s['products_with_images']:,}\n")
+                  f.write(f"- Success rate: {s['success_rate']:.1f}%\n\n")
+
+          print(f"\n{'='*70}")
+          print(f"FINAL RESULTS")
+          print(f"{'='*70}")
+          print(f"✅ Products WITH images: {total_with_images:,}")
+          print(f"⚠️  Products WITHOUT images: {total_without_images:,}")
+          print(f"📊 Success rate: {success_rate:.1f}%")
+          print(f"💾 Products saved: {len(all_products):,}")
+          print(f"👷 Workers: {len(all_summaries)}")
+          print(f"{'='*70}")
+          EOF
+
+      - name: Upload final results
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-results-with-images
+          path: |
+            consolidated_products_with_images.json
+            final_summary.json
+            SCRAPING_REPORT.md
+          retention-days: 90
