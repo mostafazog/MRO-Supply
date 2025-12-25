@@ -108,12 +108,16 @@ jobs:
       - name: Download product URLs
         run: |
           # Check if URL list exists in repo
-          if [ ! -f "all_product_urls_20251215_230531.json" ]; then
+          if [ -f "all_product_urls_20251215_230531.json.gz" ]; then
+            echo "✅ Found compressed URL list, decompressing..."
+            gunzip -c all_product_urls_20251215_230531.json.gz > all_product_urls_20251215_230531.json
+            echo "✅ Decompressed $(wc -l < all_product_urls_20251215_230531.json | tr -d ' ') URLs"
+          elif [ -f "all_product_urls_20251215_230531.json" ]; then
+            echo "✅ Product URL list found"
+          else
             echo "⚠️  Product URL list not found in repo"
             echo "Creating placeholder (will use sequential IDs)"
             echo "[]" > all_product_urls_20251215_230531.json
-          else
-            echo "✅ Product URL list found"
           fi
 
       - name: Scrape with image filter
