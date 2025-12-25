@@ -137,8 +137,10 @@ jobs:
           START_BATCH = ${{ matrix.worker.start_batch }}
           END_BATCH = ${{ matrix.worker.end_batch }}
           BATCH_SIZE = int("${{ github.event.inputs.batch_size }}")
-          MAX_WORKERS = 5  # Parallel requests per batch
-          REQUEST_DELAY = 0.3  # Delay between requests
+          MAX_WORKERS = 3  # Reduced parallel requests to avoid rate limiting
+          REQUEST_DELAY = 1.0  # Increased delay between requests
+          MAX_RETRIES = 5  # Maximum retry attempts for failed requests
+          BACKOFF_FACTOR = 2  # Exponential backoff multiplier
 
           print(f"Worker {WORKER_ID}: Processing batches {START_BATCH} to {END_BATCH}")
 
@@ -185,21 +187,41 @@ jobs:
 
               return real_images
 
-          # Scrape single product
-          def scrape_product(url):
-              """Scrape a single product page"""
+          # Scrape single product with retry logic
+          def scrape_product(url, retry_count=0):
+              """Scrape a single product page with exponential backoff retry"""
               session = requests.Session()
               session.headers.update({
-                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                  'Accept-Language': 'en-US,en;q=0.5',
+                  'Connection': 'keep-alive',
               })
 
               try:
                   response = session.get(url, timeout=30)
 
+                  # Handle 404 - product doesn't exist
                   if response.status_code == 404:
                       return None
 
+                  # Handle 429 - rate limited, retry with backoff
+                  if response.status_code == 429:
+                      if retry_count < MAX_RETRIES:
+                          wait_time = (BACKOFF_FACTOR ** retry_count) * REQUEST_DELAY
+                          print(f"    ⚠️  Rate limited, waiting {wait_time:.1f}s before retry {retry_count + 1}/{MAX_RETRIES}")
+                          time.sleep(wait_time)
+                          return scrape_product(url, retry_count + 1)
+                      else:
+                          print(f"    ❌ Max retries reached for {url}")
+                          return None
+
+                  # Handle other errors
                   if response.status_code != 200:
+                      if retry_count < MAX_RETRIES:
+                          wait_time = REQUEST_DELAY * 2
+                          time.sleep(wait_time)
+                          return scrape_product(url, retry_count + 1)
                       return None
 
                   soup = BeautifulSoup(response.text, 'html.parser')
@@ -250,6 +272,7 @@ jobs:
                   category_elem = soup.find('nav', {'class': 'breadcrumb'}) or soup.find('ol', {'class': 'breadcrumb'})
                   category = category_elem.get_text(strip=True) if category_elem else None
 
+                  # Add delay to avoid rate limiting
                   time.sleep(REQUEST_DELAY)
 
                   return {
@@ -264,7 +287,16 @@ jobs:
                       'scraped_at': datetime.now().isoformat()
                   }
 
+              except requests.exceptions.RequestException as e:
+                  # Handle connection errors with retry
+                  if retry_count < MAX_RETRIES:
+                      wait_time = (BACKOFF_FACTOR ** retry_count) * REQUEST_DELAY
+                      print(f"    ⚠️  Connection error, retrying in {wait_time:.1f}s...")
+                      time.sleep(wait_time)
+                      return scrape_product(url, retry_count + 1)
+                  return None
               except Exception as e:
+                  print(f"    ❌ Unexpected error for {url}: {str(e)[:50]}")
                   return None
 
           # Process batches assigned to this worker
@@ -272,6 +304,8 @@ jobs:
           total_attempted = 0
           total_with_images = 0
           total_without_images = 0
+          total_rate_limited = 0
+          total_errors = 0
 
           for batch_id in range(START_BATCH, END_BATCH):
               start_idx = batch_id * BATCH_SIZE
@@ -286,22 +320,35 @@ jobs:
 
               print(f"  Batch {batch_id}: Scraping {len(batch_urls)} products...")
 
-              # Scrape batch in parallel
+              # Scrape batch in parallel (reduced concurrency)
               batch_products = []
+              batch_rate_limited = 0
+              batch_errors = 0
+
               with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                   futures = {executor.submit(scrape_product, url): url for url in batch_urls}
 
                   for future in as_completed(futures):
                       total_attempted += 1
-                      result = future.result()
-                      if result:
-                          batch_products.append(result)
-                          total_with_images += 1
-                      else:
-                          total_without_images += 1
+                      try:
+                          result = future.result()
+                          if result:
+                              batch_products.append(result)
+                              total_with_images += 1
+                          else:
+                              total_without_images += 1
+                      except Exception as e:
+                          total_errors += 1
+                          batch_errors += 1
 
               all_products.extend(batch_products)
-              print(f"    ✅ Found {len(batch_products)} products with images")
+              success_rate = (len(batch_products) / len(batch_urls)) * 100 if batch_urls else 0
+              print(f"    ✅ Found {len(batch_products)} products with images ({success_rate:.1f}% success)")
+
+              # If success rate is too low, increase delay for next batch
+              if success_rate < 50 and batch_id < END_BATCH - 1:
+                  print(f"    ⚠️  Low success rate, adding 10s cooldown...")
+                  time.sleep(10)
 
           # Save results
           output_dir = Path('./output')
@@ -320,6 +367,7 @@ jobs:
               'products_with_images': total_with_images,
               'products_without_images': total_without_images,
               'products_saved': len(all_products),
+              'total_errors': total_errors,
               'success_rate': (total_with_images / max(total_attempted, 1)) * 100
           }
 
@@ -331,10 +379,11 @@ jobs:
           print(f"Worker {WORKER_ID} Complete")
           print(f"{'='*60}")
           print(f"Total attempted: {total_attempted:,}")
-          print(f"With images: {total_with_images:,}")
-          print(f"Without images: {total_without_images:,}")
-          print(f"Success rate: {summary['success_rate']:.1f}%")
-          print(f"Products saved: {len(all_products):,}")
+          print(f"✅ With images: {total_with_images:,}")
+          print(f"⚠️  Without images: {total_without_images:,}")
+          print(f"❌ Errors: {total_errors:,}")
+          print(f"📈 Success rate: {summary['success_rate']:.1f}%")
+          print(f"💾 Products saved: {len(all_products):,}")
           EOF
 
       - name: Upload results
