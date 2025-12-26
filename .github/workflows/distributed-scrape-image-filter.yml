@@ -316,9 +316,10 @@ jobs:
                   model_elem = soup.find('p', class_='modelNo')
                   if model_elem:
                       model_text = model_elem.get_text(strip=True)
-                      model_match = re.search(r'MODEL\s+(.+)', model_text, re.IGNORECASE)
-                      if model_match:
-                          model = model_match.group(1).strip()
+                      # Remove "MODEL" and get the rest
+                      model = model_text.replace('MODEL', '').strip()
+                      if not model:
+                          model = None
 
                   # WEIGHT - look in flex-table structure
                   weight = None
