@@ -311,39 +311,34 @@ jobs:
                       if len(url_parts) > 3:
                           category = url_parts[3].replace('-', ' ').title()
 
-                  # MODEL - look for "MODEL" label
+                  # MODEL - look for <p class="modelNo">
                   model = None
-                  model_elem = soup.find(string=re.compile(r'MODEL', re.IGNORECASE))
+                  model_elem = soup.find('p', class_='modelNo')
                   if model_elem:
-                      # Get the next sibling or parent's next element
-                      parent = model_elem.find_parent()
-                      if parent:
-                          model_text = parent.get_text(strip=True)
-                          model_match = re.search(r'MODEL\s*(.+)', model_text, re.IGNORECASE)
-                          if model_match:
-                              model = model_match.group(1).strip()
+                      model_text = model_elem.get_text(strip=True)
+                      model_match = re.search(r'MODEL\s+(.+)', model_text, re.IGNORECASE)
+                      if model_match:
+                          model = model_match.group(1).strip()
 
-                  # WEIGHT - look for "WEIGHT" label
+                  # WEIGHT - look in flex-table structure
                   weight = None
-                  weight_elem = soup.find(string=re.compile(r'WEIGHT', re.IGNORECASE))
-                  if weight_elem:
-                      parent = weight_elem.find_parent()
-                      if parent:
-                          weight_text = parent.get_text(strip=True)
-                          weight_match = re.search(r'WEIGHT\s*(.+)', weight_text, re.IGNORECASE)
-                          if weight_match:
-                              weight = weight_match.group(1).strip()
+                  for flex_item in soup.find_all('div', class_='flex-table--item'):
+                      head = flex_item.find('div', class_='flex-table--head')
+                      if head and 'WEIGHT' in head.get_text(strip=True).upper():
+                          body = flex_item.find('div', class_='flex-table--body')
+                          if body:
+                              weight = body.get_text(strip=True)
+                              break
 
-                  # UOM (Unit of Measure) - look for "UOM" label
+                  # UOM (Unit of Measure) - look in flex-table structure
                   uom = None
-                  uom_elem = soup.find(string=re.compile(r'UOM', re.IGNORECASE))
-                  if uom_elem:
-                      parent = uom_elem.find_parent()
-                      if parent:
-                          uom_text = parent.get_text(strip=True)
-                          uom_match = re.search(r'UOM\s*(.+)', uom_text, re.IGNORECASE)
-                          if uom_match:
-                              uom = uom_match.group(1).strip()
+                  for flex_item in soup.find_all('div', class_='flex-table--item'):
+                      head = flex_item.find('div', class_='flex-table--head')
+                      if head and 'UOM' in head.get_text(strip=True).upper():
+                          body = flex_item.find('div', class_='flex-table--body')
+                          if body:
+                              uom = body.get_text(strip=True)
+                              break
 
                   # SHIPPING TIME - look for "Typically Ships in" text
                   shipping_time = None
@@ -353,27 +348,16 @@ jobs:
                       if shipping_match:
                           shipping_time = shipping_match.group(1).strip()
 
-                  # SPECIFICATIONS - extract spec table data
+                  # SPECIFICATIONS - extract from o-grid-table structure
                   specifications = {}
-                  spec_section = soup.find(['div', 'section'], class_=re.compile('spec|specification', re.IGNORECASE))
-                  if spec_section:
-                      # Find all rows in specification table
-                      for row in spec_section.find_all(['tr', 'div'], class_=re.compile('row|spec-row')):
-                          cells = row.find_all(['td', 'th', 'div', 'span'])
-                          if len(cells) >= 2:
-                              key = cells[0].get_text(strip=True)
-                              value = cells[1].get_text(strip=True)
-                              if key and value:
-                                  specifications[key] = value
-
-                  # Fallback: look for definition lists
-                  if not specifications:
-                      for dl in soup.find_all('dl'):
-                          dt_elements = dl.find_all('dt')
-                          dd_elements = dl.find_all('dd')
-                          for dt, dd in zip(dt_elements, dd_elements):
-                              key = dt.get_text(strip=True)
-                              value = dd.get_text(strip=True)
+                  grid_table = soup.find('div', class_='o-grid-table')
+                  if grid_table:
+                      for grid_item in grid_table.find_all('div', class_='o-grid-item'):
+                          key_elem = grid_item.find('p', class_='key')
+                          value_elem = grid_item.find('p', class_='value')
+                          if key_elem and value_elem:
+                              key = key_elem.get_text(strip=True)
+                              value = value_elem.get_text(strip=True)
                               if key and value:
                                   specifications[key] = value
 
