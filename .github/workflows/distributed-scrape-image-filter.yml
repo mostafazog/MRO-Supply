@@ -131,6 +131,7 @@ jobs:
           from datetime import datetime
           from pathlib import Path
           import time
+          import re
 
           # Configuration
           WORKER_ID = ${{ matrix.worker.worker_id }}
@@ -257,20 +258,57 @@ jobs:
                       return None  # Skip products without images
 
                   # Extract other data
-                  sku_elem = soup.find('span', {'class': 'sku'})
-                  sku = sku_elem.get_text(strip=True).replace('SKU', '').strip() if sku_elem else url.split('/')[-2].split('_')[0]
 
-                  price_elem = soup.find('span', {'class': 'price'})
-                  price = price_elem.get_text(strip=True) if price_elem else None
+                  # SKU - look for "SKU: 123456" pattern
+                  sku = None
+                  sku_match = soup.find(string=re.compile(r'SKU:\s*\d+'))
+                  if sku_match:
+                      sku = re.search(r'SKU:\s*(\d+)', sku_match.string).group(1)
+                  if not sku:
+                      # Fallback: extract from URL
+                      sku = url.split('/')[-2].split('_')[0]
 
-                  description_elem = soup.find('div', {'class': 'description'}) or soup.find('div', {'itemprop': 'description'})
-                  description = description_elem.get_text(strip=True) if description_elem else title
+                  # PRICE - found in <p class='price'> with "$XX.XX Each" format
+                  price = None
+                  price_elem = soup.find('p', class_='price')
+                  if price_elem:
+                      price = price_elem.get_text(strip=True)
+                  else:
+                      # Fallback: search for price pattern
+                      price_pattern = re.compile(r'\$[\d,]+\.?\d*\s*(?:Each|per)')
+                      price_match = soup.find(string=price_pattern)
+                      if price_match:
+                          price = price_match.strip()
 
-                  brand_elem = soup.find('a', {'class': 'brand'}) or soup.find('span', {'itemprop': 'brand'})
-                  brand = brand_elem.get_text(strip=True) if brand_elem else None
+                  # DESCRIPTION - from meta description tag
+                  description = None
+                  meta_desc = soup.find('meta', {'name': 'description'})
+                  if meta_desc:
+                      description = meta_desc.get('content', '')
+                  if not description or description == title:
+                      description = title
 
-                  category_elem = soup.find('nav', {'class': 'breadcrumb'}) or soup.find('ol', {'class': 'breadcrumb'})
-                  category = category_elem.get_text(strip=True) if category_elem else None
+                  # BRAND - extract from meta description (format: "produced by BrandName")
+                  brand = None
+                  if meta_desc and meta_desc.get('content'):
+                      brand_match = re.search(r'produced by ([^and]+)', meta_desc.get('content'))
+                      if brand_match:
+                          brand = brand_match.group(1).strip()
+
+                  # CATEGORY - from breadcrumb
+                  category = None
+                  breadcrumb = soup.find(['nav', 'ol', 'ul'], class_=re.compile('breadcrumb'))
+                  if breadcrumb:
+                      # Remove "Home" and get remaining breadcrumb
+                      cat_text = breadcrumb.get_text(strip=True)
+                      cat_text = cat_text.replace('Home', '').strip()
+                      category = cat_text if cat_text else None
+
+                  # If no breadcrumb, use URL path
+                  if not category:
+                      url_parts = url.split('/')
+                      if len(url_parts) > 3:
+                          category = url_parts[3].replace('-', ' ').title()
 
                   # Add delay to avoid rate limiting
                   time.sleep(REQUEST_DELAY)
