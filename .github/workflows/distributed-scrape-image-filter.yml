@@ -311,6 +311,72 @@ jobs:
                       if len(url_parts) > 3:
                           category = url_parts[3].replace('-', ' ').title()
 
+                  # MODEL - look for "MODEL" label
+                  model = None
+                  model_elem = soup.find(string=re.compile(r'MODEL', re.IGNORECASE))
+                  if model_elem:
+                      # Get the next sibling or parent's next element
+                      parent = model_elem.find_parent()
+                      if parent:
+                          model_text = parent.get_text(strip=True)
+                          model_match = re.search(r'MODEL\s*(.+)', model_text, re.IGNORECASE)
+                          if model_match:
+                              model = model_match.group(1).strip()
+
+                  # WEIGHT - look for "WEIGHT" label
+                  weight = None
+                  weight_elem = soup.find(string=re.compile(r'WEIGHT', re.IGNORECASE))
+                  if weight_elem:
+                      parent = weight_elem.find_parent()
+                      if parent:
+                          weight_text = parent.get_text(strip=True)
+                          weight_match = re.search(r'WEIGHT\s*(.+)', weight_text, re.IGNORECASE)
+                          if weight_match:
+                              weight = weight_match.group(1).strip()
+
+                  # UOM (Unit of Measure) - look for "UOM" label
+                  uom = None
+                  uom_elem = soup.find(string=re.compile(r'UOM', re.IGNORECASE))
+                  if uom_elem:
+                      parent = uom_elem.find_parent()
+                      if parent:
+                          uom_text = parent.get_text(strip=True)
+                          uom_match = re.search(r'UOM\s*(.+)', uom_text, re.IGNORECASE)
+                          if uom_match:
+                              uom = uom_match.group(1).strip()
+
+                  # SHIPPING TIME - look for "Typically Ships in" text
+                  shipping_time = None
+                  shipping_elem = soup.find(string=re.compile(r'Typically Ships in', re.IGNORECASE))
+                  if shipping_elem:
+                      shipping_match = re.search(r'Typically Ships in:\s*(.+)', shipping_elem, re.IGNORECASE)
+                      if shipping_match:
+                          shipping_time = shipping_match.group(1).strip()
+
+                  # SPECIFICATIONS - extract spec table data
+                  specifications = {}
+                  spec_section = soup.find(['div', 'section'], class_=re.compile('spec|specification', re.IGNORECASE))
+                  if spec_section:
+                      # Find all rows in specification table
+                      for row in spec_section.find_all(['tr', 'div'], class_=re.compile('row|spec-row')):
+                          cells = row.find_all(['td', 'th', 'div', 'span'])
+                          if len(cells) >= 2:
+                              key = cells[0].get_text(strip=True)
+                              value = cells[1].get_text(strip=True)
+                              if key and value:
+                                  specifications[key] = value
+
+                  # Fallback: look for definition lists
+                  if not specifications:
+                      for dl in soup.find_all('dl'):
+                          dt_elements = dl.find_all('dt')
+                          dd_elements = dl.find_all('dd')
+                          for dt, dd in zip(dt_elements, dd_elements):
+                              key = dt.get_text(strip=True)
+                              value = dd.get_text(strip=True)
+                              if key and value:
+                                  specifications[key] = value
+
                   # Add delay to avoid rate limiting
                   time.sleep(REQUEST_DELAY)
 
@@ -322,6 +388,11 @@ jobs:
                       'description': description,
                       'brand': brand,
                       'category': category,
+                      'model': model,
+                      'weight': weight,
+                      'uom': uom,
+                      'shipping_time': shipping_time,
+                      'specifications': specifications,
                       'images': real_images,
                       'scraped_at': datetime.now().isoformat()
                   }
