@@ -291,7 +291,8 @@ jobs:
                   # BRAND - extract from meta description (format: "produced by BrandName")
                   brand = None
                   if meta_desc and meta_desc.get('content'):
-                      brand_match = re.search(r'produced by ([^and]+)', meta_desc.get('content'))
+                      # Match until " and " (as word, not individual letters)
+                      brand_match = re.search(r'produced by ([A-Za-z0-9\s\-\.&]+?)(?:\s+and\s+)', meta_desc.get('content'))
                       if brand_match:
                           brand = brand_match.group(1).strip()
 
