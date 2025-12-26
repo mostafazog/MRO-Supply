@@ -15,6 +15,14 @@ on:
         description: 'GitHub Actions workers (max 256)'
         required: false
         default: '100'
+      start_batch:
+        description: 'Start from batch number (0 = beginning, for multi-day scraping)'
+        required: false
+        default: '0'
+      end_batch:
+        description: 'End at batch number (0 = scrape all, for multi-day scraping)'
+        required: false
+        default: '0'
 
 jobs:
   prepare:
@@ -44,31 +52,45 @@ jobs:
           total_products = int("${{ github.event.inputs.total_products }}")
           batch_size = int("${{ github.event.inputs.batch_size }}")
           github_workers = int("${{ github.event.inputs.github_workers }}")
+          start_batch_input = int("${{ github.event.inputs.start_batch }}")
+          end_batch_input = int("${{ github.event.inputs.end_batch }}")
 
           total_batches = math.ceil(total_products / batch_size)
 
+          # Support multi-day scraping with batch ranges
+          if start_batch_input > 0 or end_batch_input > 0:
+              start_batch_range = start_batch_input
+              end_batch_range = end_batch_input if end_batch_input > 0 else total_batches
+              total_batches_to_scrape = end_batch_range - start_batch_range
+              print(f"📅 MULTI-DAY MODE: Scraping batches {start_batch_range:,} to {end_batch_range:,}")
+          else:
+              start_batch_range = 0
+              end_batch_range = total_batches
+              total_batches_to_scrape = total_batches
+              print(f"🔄 FULL SCRAPE MODE: Scraping all batches")
+
           # Limit to max 256 workers for GitHub Actions
-          num_workers = min(github_workers, 256, total_batches)
+          num_workers = min(github_workers, 256, total_batches_to_scrape)
 
           print(f"Total products: {total_products:,}")
           print(f"Batch size: {batch_size}")
-          print(f"Total batches: {total_batches:,}")
+          print(f"Batches to scrape: {total_batches_to_scrape:,}")
           print(f"GitHub workers: {num_workers}")
 
           # Distribute batches across workers
-          batches_per_worker = math.ceil(total_batches / num_workers)
+          batches_per_worker = math.ceil(total_batches_to_scrape / num_workers)
 
           # Create worker assignments (each worker gets multiple batches)
           workers = []
           for worker_id in range(num_workers):
-              start_batch = worker_id * batches_per_worker
-              if start_batch < total_batches:
-                  end_batch = min(start_batch + batches_per_worker, total_batches)
+              worker_start = start_batch_range + (worker_id * batches_per_worker)
+              if worker_start < end_batch_range:
+                  worker_end = min(worker_start + batches_per_worker, end_batch_range)
                   workers.append({
                       'worker_id': worker_id,
-                      'start_batch': start_batch,
-                      'end_batch': end_batch,
-                      'num_batches': end_batch - start_batch
+                      'start_batch': worker_start,
+                      'end_batch': worker_end,
+                      'num_batches': worker_end - worker_start
                   })
 
           # Output for matrix
@@ -138,8 +160,8 @@ jobs:
           START_BATCH = ${{ matrix.worker.start_batch }}
           END_BATCH = ${{ matrix.worker.end_batch }}
           BATCH_SIZE = int("${{ github.event.inputs.batch_size }}")
-          MAX_WORKERS = 5  # Parallel requests per batch
-          REQUEST_DELAY = 0.5  # Balanced delay between requests
+          MAX_WORKERS = 3  # Reduced for rate limiting (was 5)
+          REQUEST_DELAY = 1.0  # Conservative delay to avoid rate limiting (was 0.5)
           MAX_RETRIES = 5  # Maximum retry attempts for failed requests
           BACKOFF_FACTOR = 2  # Exponential backoff multiplier
 
