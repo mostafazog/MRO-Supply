@@ -1,0 +1,204 @@
+name: Automated 5-Day Sequential Scraping
+
+on:
+  workflow_dispatch:
+    inputs:
+      workers_per_day:
+        description: 'Workers per day (recommended: 12)'
+        required: false
+        default: '12'
+      delay_between_days:
+        description: 'Delay between days in hours (recommended: 6-12)'
+        required: false
+        default: '8'
+
+jobs:
+  orchestrator:
+    name: Multi-Day Scraping Orchestrator
+    runs-on: ubuntu-latest
+    timeout-minutes: 2880  # 48 hours max
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Install GitHub CLI
+        run: |
+          type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt update
+          sudo apt install gh -y
+      
+      - name: Authenticate GitHub CLI
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+      
+      - name: Run 5-Day Sequential Scraping
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKERS: ${{ github.event.inputs.workers_per_day }}
+          DELAY_HOURS: ${{ github.event.inputs.delay_between_days }}
+        run: |
+          python3 << 'PYTHON_EOF'
+          import subprocess
+          import time
+          import json
+          import sys
+          import os
+          
+          WORKERS = int(os.environ.get('WORKERS', '12'))
+          DELAY_HOURS = int(os.environ.get('DELAY_HOURS', '8'))
+          DELAY_SECONDS = DELAY_HOURS * 3600
+          
+          # Define the 5-day schedule
+          schedule = [
+              {"day": 1, "start": 0, "end": 3000, "products": "0-300K"},
+              {"day": 2, "start": 3000, "end": 6000, "products": "300K-600K"},
+              {"day": 3, "start": 6000, "end": 9000, "products": "600K-900K"},
+              {"day": 4, "start": 9000, "end": 12000, "products": "900K-1.2M"},
+              {"day": 5, "start": 12000, "end": 15088, "products": "1.2M-1.5M"}
+          ]
+          
+          print("="*80)
+          print("🤖 AUTOMATED 5-DAY SCRAPING ORCHESTRATOR")
+          print("="*80)
+          print(f"Workers per day: {WORKERS}")
+          print(f"Delay between days: {DELAY_HOURS} hours")
+          print(f"Total estimated time: ~{5 * 6 + 4 * DELAY_HOURS} hours")
+          print("="*80)
+          
+          results = []
+          
+          for config in schedule:
+              day = config["day"]
+              start_batch = config["start"]
+              end_batch = config["end"]
+              products_range = config["products"]
+              
+              print(f"\n📅 DAY {day}: Starting scrape for batches {start_batch}-{end_batch} ({products_range})")
+              print(f"   Launching workflow with {WORKERS} workers...")
+              
+              # Launch the workflow
+              cmd = [
+                  'gh', 'workflow', 'run', 'distributed-scrape-image-filter.yml',
+                  '--repo', 'mostafazog/MRO-Supply',
+                  '--field', f'github_workers={WORKERS}',
+                  '--field', f'start_batch={start_batch}',
+                  '--field', f'end_batch={end_batch}'
+              ]
+              
+              try:
+                  result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                  print(f"   ✅ Day {day} workflow launched successfully!")
+              except subprocess.CalledProcessError as e:
+                  print(f"   ❌ Failed to launch Day {day} workflow: {e}")
+                  print(f"   Error output: {e.stderr}")
+                  sys.exit(1)
+              
+              # Wait a few seconds for the workflow to start
+              time.sleep(10)
+              
+              # Get the workflow run ID
+              print(f"   ⏳ Waiting for Day {day} workflow to start...")
+              time.sleep(5)
+              
+              # Get latest run
+              cmd = [
+                  'gh', 'run', 'list',
+                  '--repo', 'mostafazog/MRO-Supply',
+                  '--workflow', 'distributed-scrape-image-filter.yml',
+                  '--limit', '1',
+                  '--json', 'databaseId,status,conclusion,createdAt'
+              ]
+              
+              try:
+                  result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                  runs = json.loads(result.stdout)
+                  if runs:
+                      run_id = runs[0]['databaseId']
+                      print(f"   📊 Day {day} Run ID: {run_id}")
+                      print(f"   🔗 Monitor at: https://github.com/mostafazog/MRO-Supply/actions/runs/{run_id}")
+                  else:
+                      print(f"   ⚠️  Could not get run ID for Day {day}")
+                      run_id = "unknown"
+              except Exception as e:
+                  print(f"   ⚠️  Error getting run ID: {e}")
+                  run_id = "unknown"
+              
+              # Monitor the workflow until completion
+              print(f"   ⏳ Monitoring Day {day} progress...")
+              check_interval = 300  # Check every 5 minutes
+              max_wait = 28800  # Max 8 hours
+              elapsed = 0
+              
+              while elapsed < max_wait:
+                  time.sleep(check_interval)
+                  elapsed += check_interval
+                  
+                  # Check workflow status
+                  cmd = [
+                      'gh', 'run', 'view', str(run_id),
+                      '--repo', 'mostafazog/MRO-Supply',
+                      '--json', 'status,conclusion'
+                  ]
+                  
+                  try:
+                      result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                      run_data = json.loads(result.stdout)
+                      status = run_data.get('status', 'unknown')
+                      conclusion = run_data.get('conclusion', '')
+                      
+                      if status == 'completed':
+                          if conclusion == 'success':
+                              print(f"   ✅ Day {day} completed successfully after {elapsed/3600:.1f} hours!")
+                              results.append({"day": day, "status": "success", "run_id": run_id})
+                              break
+                          else:
+                              print(f"   ❌ Day {day} failed with conclusion: {conclusion}")
+                              results.append({"day": day, "status": "failed", "run_id": run_id, "conclusion": conclusion})
+                              break
+                      else:
+                          print(f"   ⏳ Day {day} still running... ({elapsed/3600:.1f}h elapsed)")
+                  
+                  except Exception as e:
+                      print(f"   ⚠️  Error checking status: {e}")
+              
+              # Check if we timed out
+              if elapsed >= max_wait:
+                  print(f"   ⚠️  Day {day} exceeded maximum wait time")
+                  results.append({"day": day, "status": "timeout", "run_id": run_id})
+              
+              # Wait between days (except after the last day)
+              if day < 5:
+                  print(f"\n   😴 Waiting {DELAY_HOURS} hours before Day {day + 1}...")
+                  print(f"   💡 This gives the server a break and ensures respectful scraping")
+                  time.sleep(DELAY_SECONDS)
+          
+          # Final summary
+          print("\n" + "="*80)
+          print("🎉 5-DAY SCRAPING COMPLETE!")
+          print("="*80)
+          
+          for result in results:
+              status_icon = "✅" if result["status"] == "success" else "❌"
+              print(f"{status_icon} Day {result['day']}: {result['status']} (Run ID: {result['run_id']})")
+          
+          successful_days = sum(1 for r in results if r["status"] == "success")
+          print(f"\n✅ Successfully completed: {successful_days}/5 days")
+          print(f"📊 Estimated products scraped: ~{successful_days * 270000:,}")
+          print("="*80)
+          
+          # Exit with error if not all days succeeded
+          if successful_days < 5:
+              sys.exit(1)
+          
+          PYTHON_EOF
+      
+      - name: Summary
+        if: always()
+        run: |
+          echo "### 5-Day Scraping Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Check the logs above for detailed results from each day." >> $GITHUB_STEP_SUMMARY
