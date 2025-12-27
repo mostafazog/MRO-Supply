@@ -1,0 +1,119 @@
+name: Scrape Raptor Variants
+
+on:
+  workflow_dispatch:
+    inputs:
+      total_products:
+        description: 'Total number of collection pages to scrape'
+        required: true
+        default: '100'
+      workers:
+        description: 'Number of parallel workers'
+        required: true
+        default: '10'
+      start_index:
+        description: 'Start index in URL list'
+        required: false
+        default: '0'
+      use_browser:
+        description: 'Use browser automation (slower but bypasses Cloudflare)'
+        required: false
+        default: 'true'
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 10
+      matrix:
+        worker_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 lxml selenium undetected-chromedriver
+
+      - name: Install Chrome
+        if: github.event.inputs.use_browser == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y chromium-browser chromium-chromedriver
+
+      - name: Run variant scraper
+        env:
+          WORKER_ID: ${{ matrix.worker_id }}
+          TOTAL_WORKERS: ${{ github.event.inputs.workers }}
+          TOTAL_PRODUCTS: ${{ github.event.inputs.total_products }}
+          START_INDEX: ${{ github.event.inputs.start_index }}
+          USE_BROWSER: ${{ github.event.inputs.use_browser }}
+        run: |
+          python raptorsupplies_variant_scraper.py
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-${{ matrix.worker_id }}-variants
+          path: |
+            worker_${{ matrix.worker_id }}_products.json
+            worker_${{ matrix.worker_id }}_errors.json
+          retention-days: 7
+
+  aggregate:
+    needs: scrape
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Aggregate variants
+        run: |
+          python raptorsupplies_variant_aggregator.py artifacts/
+
+      - name: Upload aggregated results
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-variants
+          path: |
+            raptor_variants_final.json
+            raptor_variants_summary.json
+            raptor_variants_sample.json
+          retention-days: 30
+
+      - name: Create summary
+        run: |
+          python << 'EOF'
+          import json
+          import os
+
+          if os.path.exists('raptor_variants_summary.json'):
+              with open('raptor_variants_summary.json', 'r') as f:
+                  summary = json.load(f)
+
+              print(f"## 🎉 Variant Scraping Complete")
+              print(f"")
+              print(f"- **Collections Processed:** {summary.get('total_collections', 0):,}")
+              print(f"- **Total Variants:** {summary.get('total_variants', 0):,}")
+              print(f"- **Variants with SKU:** {summary.get('variants_with_sku', 0):,} ({summary.get('sku_percentage', 0)}%)")
+              print(f"- **Variants with Price:** {summary.get('variants_with_price', 0):,} ({summary.get('price_percentage', 0)}%)")
+          else:
+              print("⚠️ No summary file found")
+          EOF
