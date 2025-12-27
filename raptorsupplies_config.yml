@@ -1,0 +1,116 @@
+# Raptor Supplies Scraping Configuration
+
+# Source Website
+source:
+  base_url: "https://www.raptorsupplies.com"
+  product_url_pattern: "https://www.raptorsupplies.com/products/{product_id}"
+  # Note: You may need to adjust the URL pattern after testing
+  # Common patterns:
+  # - /product/{product_id}
+  # - /p/{product_id}
+  # - /item/{sku}
+
+  # Estimate total products (adjust after exploring site)
+  total_products: 100000  # Adjust based on actual catalog size
+
+# Rate Limiting & Anti-Ban (Aggressive protection due to 403 errors)
+rate_limiting:
+  products_per_minute: 6  # Very conservative for 403-protected site
+  max_products_per_minute: 12  # Maximum if system is stable
+  min_delay_seconds: 5  # Longer delays to avoid detection
+  max_delay_seconds: 15  # Maximum delay for randomization
+  requests_per_session: 50  # Rotate session more frequently
+
+  # Backoff strategy
+  backoff:
+    initial_delay: 60  # seconds on first error (longer due to 403)
+    max_delay: 600  # maximum backoff delay (10 minutes)
+    multiplier: 2  # exponential multiplier
+
+  # Ban detection
+  ban_detection:
+    check_after_errors: 2  # Check for ban after fewer errors
+    cooldown_period: 900  # Wait 15 minutes if ban detected
+    max_retries: 5  # More retry attempts
+
+# Request Configuration
+requests:
+  timeout: 45  # Longer timeout
+  max_redirects: 5
+  verify_ssl: true
+
+  # Diverse user agent rotation (essential for 403 bypass)
+  user_agents:
+    - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+    - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+    - "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    - "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
+    - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0"
+    - "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0"
+    - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
+    - "Mozilla/5.0 (iPad; CPU OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+    - "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+
+  # Headers (mimic real browser behavior)
+  headers:
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+    Accept-Language: "en-US,en;q=0.9"
+    Accept-Encoding: "gzip, deflate, br"
+    DNT: "1"
+    Connection: "keep-alive"
+    Upgrade-Insecure-Requests: "1"
+    Sec-Fetch-Dest: "document"
+    Sec-Fetch-Mode: "navigate"
+    Sec-Fetch-Site: "none"
+    Cache-Control: "max-age=0"
+
+# Scraping Strategy
+scraping:
+  batch_size: 50  # Smaller batches for conservative scraping
+  max_workers: 3  # Fewer concurrent workers
+  checkpoint_interval: 25  # Save progress more frequently
+
+  # Resume strategy
+  resume:
+    enabled: true
+    checkpoint_file: "raptorsupplies_checkpoint.json"
+
+  # Product range (adjust based on site exploration)
+  start_product_id: 1
+  end_product_id: 100000
+
+  # Skip strategies
+  skip_existing: true
+  skip_failed: false
+
+# Storage & Logging
+storage:
+  data_dir: "./data/raptorsupplies"
+  results_dir: "./data/raptorsupplies/results"
+  errors_dir: "./data/raptorsupplies/errors"
+  checkpoints_dir: "./data/raptorsupplies/checkpoints"
+
+  tracking_db: "./data/raptorsupplies/scraping_tracker.db"
+
+logging:
+  level: "INFO"
+  format: "[%(asctime)s] %(levelname)s - %(message)s"
+  file: "./logs/raptorsupplies_scraper.log"
+  max_size_mb: 50
+  backup_count: 5
+  console: true
+
+# Monitoring
+monitoring:
+  enabled: true
+  metrics_file: "./data/raptorsupplies/metrics.json"
+  update_interval: 60
+
+  metrics:
+    - products_scraped
+    - errors_count
+    - ban_incidents
+    - average_rate
+    - success_rate

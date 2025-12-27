@@ -1,0 +1,126 @@
+name: Scrape Raptor Supplies
+
+on:
+  workflow_dispatch:
+    inputs:
+      total_products:
+        description: 'Total number of products to scrape'
+        required: true
+        default: '1000'
+      workers:
+        description: 'Number of parallel workers'
+        required: true
+        default: '10'
+      start_index:
+        description: 'Start index in URL list'
+        required: false
+        default: '0'
+      use_browser:
+        description: 'Use browser automation (slower but bypasses Cloudflare)'
+        required: false
+        default: 'true'
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 10
+      matrix:
+        worker_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 lxml selenium undetected-chromedriver
+
+      - name: Install Chrome
+        if: github.event.inputs.use_browser == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y chromium-browser chromium-chromedriver
+
+      - name: Download product URLs
+        run: |
+          # Download the URLs file (assuming it's committed or we fetch it)
+          if [ ! -f raptorsupplies_urls.json ]; then
+            echo "Creating dummy URLs file for testing"
+            echo '{"total_products": 100, "product_urls": []}' > raptorsupplies_urls.json
+          fi
+
+      - name: Run scraper
+        env:
+          WORKER_ID: ${{ matrix.worker_id }}
+          TOTAL_WORKERS: ${{ github.event.inputs.workers }}
+          TOTAL_PRODUCTS: ${{ github.event.inputs.total_products }}
+          START_INDEX: ${{ github.event.inputs.start_index }}
+          USE_BROWSER: ${{ github.event.inputs.use_browser }}
+        run: |
+          python raptorsupplies_github_worker.py
+
+      - name: Upload results
+        uses: actions/upload-artifact@v3
+        with:
+          name: worker-${{ matrix.worker_id }}-results
+          path: |
+            worker_${{ matrix.worker_id }}_products.json
+            worker_${{ matrix.worker_id }}_errors.json
+          retention-days: 7
+
+  aggregate:
+    needs: scrape
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: artifacts/
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Aggregate results
+        run: |
+          python raptorsupplies_aggregate.py artifacts/
+
+      - name: Upload aggregated results
+        uses: actions/upload-artifact@v3
+        with:
+          name: final-results
+          path: |
+            raptor_products_final.json
+            raptor_scraping_summary.json
+          retention-days: 30
+
+      - name: Create summary
+        run: |
+          python << 'EOF'
+          import json
+          import os
+
+          if os.path.exists('raptor_scraping_summary.json'):
+              with open('raptor_scraping_summary.json', 'r') as f:
+                  summary = json.load(f)
+
+              print(f"## 🎉 Scraping Complete")
+              print(f"")
+              print(f"- **Total Products:** {summary.get('total_products', 0):,}")
+              print(f"- **Successful:** {summary.get('successful', 0):,}")
+              print(f"- **Failed:** {summary.get('failed', 0):,}")
+              print(f"- **Success Rate:** {summary.get('success_rate', 0):.1f}%")
+          else:
+              print("⚠️ No summary file found")
+          EOF
