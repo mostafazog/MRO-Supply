@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       workers_per_day:
-        description: 'Workers per day (recommended: 24)'
+        description: 'Workers per day (MAX: 18 due to GitHub 20-job limit)'
         required: false
-        default: '24'
+        default: '18'
       delay_between_days:
         description: 'Delay between days in hours (recommended: 6-12)'
         required: false
@@ -52,7 +52,7 @@ jobs:
           import sys
           import os
           
-          WORKERS = int(os.environ.get('WORKERS', '12'))
+          WORKERS = int(os.environ.get('WORKERS', '18'))
           DELAY_HOURS = int(os.environ.get('DELAY_HOURS', '8'))
           DELAY_SECONDS = DELAY_HOURS * 3600
           
@@ -70,7 +70,7 @@ jobs:
           print("="*80)
           print(f"Workers per day: {WORKERS}")
           print(f"Delay between days: {DELAY_HOURS} hours")
-          print(f"Total estimated time: ~{5 * 6 + 4 * DELAY_HOURS} hours")
+          print(f"Total estimated time: ~{5 * 6 + 4 * DELAY_HOURS} hours (with 18 workers, staying under GitHub's 20-job limit)")
           print("="*80)
           
           results = []
