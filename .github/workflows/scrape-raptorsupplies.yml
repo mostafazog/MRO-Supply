@@ -67,7 +67,7 @@ jobs:
           python raptorsupplies_github_worker.py
 
       - name: Upload results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: worker-${{ matrix.worker_id }}-results
           path: |
@@ -83,7 +83,7 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           path: artifacts/
 
@@ -97,7 +97,7 @@ jobs:
           python raptorsupplies_aggregate.py artifacts/
 
       - name: Upload aggregated results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: final-results
           path: |
