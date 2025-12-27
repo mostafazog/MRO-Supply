@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       workers_per_day:
-        description: 'Workers per day (recommended: 12)'
+        description: 'Workers per day (recommended: 24)'
         required: false
-        default: '12'
+        default: '24'
       delay_between_days:
         description: 'Delay between days in hours (recommended: 6-12)'
         required: false
