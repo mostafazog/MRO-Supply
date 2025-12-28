@@ -1,0 +1,89 @@
+name: Manual 100K Product Scraping
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_number:
+        description: 'Run number (1-15, or use custom batches below)'
+        required: false
+        default: '1'
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '4'
+          - '5'
+          - '6'
+          - '7'
+          - '8'
+          - '9'
+          - '10'
+          - '11'
+          - '12'
+          - '13'
+          - '14'
+          - '15'
+          - 'custom'
+      custom_start_batch:
+        description: 'Custom start batch (only if run_number=custom)'
+        required: false
+        default: '0'
+      custom_end_batch:
+        description: 'Custom end batch (only if run_number=custom)'
+        required: false
+        default: '1000'
+      workers:
+        description: 'Number of workers (recommended: 18)'
+        required: false
+        default: '18'
+
+jobs:
+  calculate-batches:
+    name: Calculate Batch Range
+    runs-on: ubuntu-latest
+    outputs:
+      start_batch: ${{ steps.calc.outputs.start_batch }}
+      end_batch: ${{ steps.calc.outputs.end_batch }}
+      workers: ${{ steps.calc.outputs.workers }}
+    steps:
+      - name: Calculate batch range
+        id: calc
+        run: |
+          RUN_NUM="${{ github.event.inputs.run_number }}"
+          WORKERS="${{ github.event.inputs.workers }}"
+
+          if [ "$RUN_NUM" = "custom" ]; then
+            START="${{ github.event.inputs.custom_start_batch }}"
+            END="${{ github.event.inputs.custom_end_batch }}"
+          else
+            # Calculate based on run number
+            START=$(( ($RUN_NUM - 1) * 1000 ))
+            END=$(( $RUN_NUM * 1000 ))
+
+            # Handle last run (Run 15 goes to 15088)
+            if [ "$RUN_NUM" = "15" ]; then
+              END=15088
+            fi
+          fi
+
+          echo "start_batch=$START" >> $GITHUB_OUTPUT
+          echo "end_batch=$END" >> $GITHUB_OUTPUT
+          echo "workers=$WORKERS" >> $GITHUB_OUTPUT
+
+          echo "📊 Run Configuration:"
+          echo "   Start batch: $START"
+          echo "   End batch: $END"
+          echo "   Total batches: $(($END - $START))"
+          echo "   Products: ~$(( ($END - $START) * 100 ))"
+          echo "   Workers: $WORKERS"
+          echo "   Batches per worker: ~$(( ($END - $START) / $WORKERS ))"
+
+  scrape:
+    name: Scrape 100K Products
+    needs: calculate-batches
+    uses: ./.github/workflows/distributed-scrape-image-filter.yml
+    with:
+      github_workers: ${{ needs.calculate-batches.outputs.workers }}
+      start_batch: ${{ needs.calculate-batches.outputs.start_batch }}
+      end_batch: ${{ needs.calculate-batches.outputs.end_batch }}
