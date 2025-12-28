@@ -75,12 +75,12 @@ jobs:
           import os
           import math
 
-          # Configuration
-          total_products = int("${{ github.event.inputs.total_products }}")
-          batch_size = int("${{ github.event.inputs.batch_size }}")
-          github_workers = int("${{ github.event.inputs.github_workers }}")
-          start_batch_input = int("${{ github.event.inputs.start_batch }}")
-          end_batch_input = int("${{ github.event.inputs.end_batch }}")
+          # Configuration - handle both workflow_dispatch and workflow_call
+          total_products = int("${{ inputs.total_products || github.event.inputs.total_products || '1508714' }}")
+          batch_size = int("${{ inputs.batch_size || github.event.inputs.batch_size || '100' }}")
+          github_workers = int("${{ inputs.github_workers || github.event.inputs.github_workers || '100' }}")
+          start_batch_input = int("${{ inputs.start_batch || github.event.inputs.start_batch || '0' }}")
+          end_batch_input = int("${{ inputs.end_batch || github.event.inputs.end_batch || '0' }}")
 
           total_batches = math.ceil(total_products / batch_size)
 
