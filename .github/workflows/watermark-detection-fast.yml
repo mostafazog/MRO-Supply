@@ -16,6 +16,7 @@ env:
   SERVER_HOST: srv1164617.hstgr.cloud
   SERVER_USER: root
   CHUNKS_DIR: /home/hstgr-srv1164617/image_chunks
+  SSHPASS: ${{ secrets.SERVER_PASSWORD }}
 
 jobs:
   # Job 1: Prepare chunks on server
@@ -25,11 +26,10 @@ jobs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
       chunk_count: ${{ steps.prepare-chunks.outputs.chunk_count }}
     steps:
-      - name: Setup SSH
+      - name: Setup SSH with password
         run: |
+          sudo apt-get update && sudo apt-get install -y sshpass
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
 
       - name: Prepare chunks on server
@@ -39,7 +39,7 @@ jobs:
 
           echo "Creating $WORKERS image chunks on server..."
 
-          ssh ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << REMOTE_SCRIPT
+          sshpass -e ssh -o StrictHostKeyChecking=no ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << REMOTE_SCRIPT
           set -e
 
           CHUNKS_DIR="${{ env.CHUNKS_DIR }}"
@@ -82,7 +82,7 @@ jobs:
           REMOTE_SCRIPT
 
           # Get actual chunk count
-          CHUNK_COUNT=$(ssh ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} "ls ${{ env.CHUNKS_DIR }}/*.tar.gz 2>/dev/null | wc -l")
+          CHUNK_COUNT=$(sshpass -e ssh -o StrictHostKeyChecking=no ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} "ls ${{ env.CHUNKS_DIR }}/*.tar.gz 2>/dev/null | wc -l")
           echo "chunk_count=$CHUNK_COUNT" >> $GITHUB_OUTPUT
           echo "Created $CHUNK_COUNT chunks"
 
@@ -117,11 +117,10 @@ jobs:
       - name: Install dependencies
         run: pip install easyocr pillow
 
-      - name: Setup SSH
+      - name: Setup SSH with password
         run: |
+          sudo apt-get update && sudo apt-get install -y sshpass
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
 
       - name: Download and process chunk ${{ matrix.chunk }}
@@ -129,7 +128,7 @@ jobs:
           CHUNK_NUM=$(printf '%03d' ${{ matrix.chunk }})
 
           echo "Downloading chunk $CHUNK_NUM..."
-          scp ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.CHUNKS_DIR }}/images_${CHUNK_NUM}.tar.gz . 2>/dev/null || {
+          sshpass -e scp -o StrictHostKeyChecking=no ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.CHUNKS_DIR }}/images_${CHUNK_NUM}.tar.gz . 2>/dev/null || {
             echo "Chunk $CHUNK_NUM not found, skipping"
             touch watermarked_${{ matrix.chunk }}.txt
             exit 0
@@ -206,17 +205,16 @@ jobs:
           path: results/
           merge-multiple: true
 
-      - name: Setup SSH
+      - name: Setup SSH with password
         run: |
+          sudo apt-get update && sudo apt-get install -y sshpass
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
 
       - name: Combine and map to server paths
         run: |
           # Get the original image list to map filenames back to paths
-          ssh ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} \
+          sshpass -e ssh -o StrictHostKeyChecking=no ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} \
             "cat ${{ env.CHUNKS_DIR }}/all_images.txt" > all_images.txt
 
           # Combine all watermarked filenames
@@ -252,13 +250,13 @@ jobs:
 
       - name: Upload to server
         run: |
-          scp watermarked_images.txt \
+          sshpass -e scp -o StrictHostKeyChecking=no watermarked_images.txt \
             ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:/home/hstgr-srv1164617/watermarked_images.txt
           echo "Uploaded to: /home/hstgr-srv1164617/watermarked_images.txt"
 
       - name: Create replacement script on server
         run: |
-          ssh ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << 'REMOTE'
+          sshpass -e ssh -o StrictHostKeyChecking=no ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << 'REMOTE'
           cat > /home/hstgr-srv1164617/replace_watermarked.sh << 'SCRIPT'
           #!/bin/bash
           PLACEHOLDER="/home/hstgr-srv1164617/htdocs/srv1164617.hstgr.cloud/img/p/en-default-large_default.jpg"

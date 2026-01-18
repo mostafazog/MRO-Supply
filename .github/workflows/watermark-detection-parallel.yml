@@ -13,6 +13,7 @@ env:
   SERVER_USER: root
   REMOTE_IMAGE_DIR: /home/hstgr-srv1164617/htdocs/srv1164617.hstgr.cloud/img/p
   REMOTE_ZIP: /home/hstgr-srv1164617/main_product_photos.zip
+  SSHPASS: ${{ secrets.SERVER_PASSWORD }}
 
 jobs:
   # Job 1: Prepare image list and split into chunks
@@ -22,18 +23,17 @@ jobs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
       total_images: ${{ steps.get-list.outputs.total }}
     steps:
-      - name: Setup SSH
+      - name: Setup SSH with password
         run: |
+          sudo apt-get update && sudo apt-get install -y sshpass
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
 
       - name: Get image list from server
         id: get-list
         run: |
           echo "Getting image list from server..."
-          ssh ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} \
+          sshpass -e ssh -o StrictHostKeyChecking=no ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} \
             "find ${{ env.REMOTE_IMAGE_DIR }} -type f -name '*.jpg' | grep -v '_default'" \
             > all_images.txt
 
@@ -97,13 +97,12 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install easyocr pillow tqdm paramiko scp
+          sudo apt-get update && sudo apt-get install -y sshpass
+          pip install easyocr pillow tqdm
 
       - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
 
       - name: Download chunks artifact
@@ -113,6 +112,8 @@ jobs:
           path: chunks/
 
       - name: Process chunk ${{ matrix.chunk }}
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
         run: |
           CHUNK_FILE="chunks/chunk_$(printf '%03d' ${{ matrix.chunk }}).txt"
 
@@ -126,31 +127,44 @@ jobs:
           IMAGES=$(wc -l < "$CHUNK_FILE")
           echo "Processing chunk ${{ matrix.chunk }} with $IMAGES images"
 
+          # Download images from server
+          mkdir -p images
+          echo "Downloading images..."
+
+          count=0
+          while IFS= read -r remote_path; do
+            filename=$(basename "$remote_path")
+            sshpass -e scp -o StrictHostKeyChecking=no \
+              ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:"$remote_path" \
+              "images/${filename}" 2>/dev/null || true
+            count=$((count + 1))
+            if [ $((count % 500)) -eq 0 ]; then
+              echo "Downloaded $count/$IMAGES images..."
+            fi
+          done < "$CHUNK_FILE"
+
+          echo "Downloaded $count images, running OCR..."
+
           python3 << 'PYTHON_SCRIPT'
           import os
-          import paramiko
-          from scp import SCPClient
           import easyocr
           from pathlib import Path
-          import tempfile
-          import shutil
 
           CHUNK_ID = ${{ matrix.chunk }}
-          CHUNK_FILE = f"chunks/chunk_{CHUNK_ID:03d}.txt"
-          SERVER_HOST = "${{ env.SERVER_HOST }}"
-          SERVER_USER = "${{ env.SERVER_USER }}"
-          SSH_KEY = os.path.expanduser("~/.ssh/id_rsa")
-
           WATERMARK_PATTERNS = ['mrosupply', 'mro supply', 'mrosupply.com', 'www.mrosupply']
 
-          # Read image list
-          with open(CHUNK_FILE, 'r') as f:
-              images = [line.strip() for line in f if line.strip()]
+          # Read chunk file to get original paths
+          chunk_file = f"chunks/chunk_{CHUNK_ID:03d}.txt"
+          with open(chunk_file, 'r') as f:
+              path_map = {os.path.basename(line.strip()): line.strip() for line in f}
+
+          # Get all downloaded images
+          images_dir = Path('images')
+          images = list(images_dir.glob('*.jpg'))
 
           print(f"Worker {CHUNK_ID}: Processing {len(images)} images")
 
           if not images:
-              print("No images to process")
               open(f"watermarked_{CHUNK_ID}.txt", 'w').close()
               exit(0)
 
@@ -158,48 +172,24 @@ jobs:
           print("Initializing EasyOCR...")
           reader = easyocr.Reader(['en'], gpu=False)
 
-          # Setup SSH
-          ssh = paramiko.SSHClient()
-          ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-          key = paramiko.RSAKey.from_private_key_file(SSH_KEY)
-          ssh.connect(SERVER_HOST, username=SERVER_USER, pkey=key)
-          scp = SCPClient(ssh.get_transport())
-
-          # Process images
           watermarked = []
-          temp_dir = tempfile.mkdtemp()
+          for i, img_path in enumerate(images):
+              try:
+                  results = reader.readtext(str(img_path))
+                  text = ' '.join([r[1].lower() for r in results])
 
-          try:
-              for i, remote_path in enumerate(images):
-                  try:
-                      # Download image
-                      local_path = os.path.join(temp_dir, f"img_{i}.jpg")
-                      scp.get(remote_path, local_path)
+                  for pattern in WATERMARK_PATTERNS:
+                      if pattern.lower() in text:
+                          # Get original server path
+                          original_path = path_map.get(img_path.name, img_path.name)
+                          watermarked.append(original_path)
+                          break
 
-                      # OCR
-                      results = reader.readtext(local_path)
-                      text = ' '.join([r[1].lower() for r in results])
+                  if (i + 1) % 100 == 0:
+                      print(f"Worker {CHUNK_ID}: {i+1}/{len(images)} processed, {len(watermarked)} watermarked")
 
-                      # Check for watermark
-                      for pattern in WATERMARK_PATTERNS:
-                          if pattern.lower() in text:
-                              watermarked.append(remote_path)
-                              break
-
-                      # Cleanup
-                      os.remove(local_path)
-
-                      if (i + 1) % 100 == 0:
-                          print(f"Worker {CHUNK_ID}: {i+1}/{len(images)} processed, {len(watermarked)} watermarked")
-
-                  except Exception as e:
-                      print(f"Error processing {remote_path}: {e}")
-                      continue
-
-          finally:
-              shutil.rmtree(temp_dir, ignore_errors=True)
-              scp.close()
-              ssh.close()
+              except Exception as e:
+                  continue
 
           # Save results
           with open(f"watermarked_{CHUNK_ID}.txt", 'w') as f:
@@ -240,16 +230,17 @@ jobs:
           echo "First 20 watermarked images:"
           head -20 watermarked_images_combined.txt
 
-      - name: Setup SSH
+      - name: Setup SSH with password
         run: |
+          sudo apt-get update && sudo apt-get install -y sshpass
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
 
       - name: Upload to server
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
         run: |
-          scp watermarked_images_combined.txt \
+          sshpass -e scp -o StrictHostKeyChecking=no watermarked_images_combined.txt \
             ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:/home/hstgr-srv1164617/watermarked_images.txt
 
           echo "Uploaded to server: /home/hstgr-srv1164617/watermarked_images.txt"
@@ -272,5 +263,5 @@ jobs:
           echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
           echo "Run on server to replace watermarked images:" >> $GITHUB_STEP_SUMMARY
           echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo 'bash /home/hstgr-srv1164617/replace_watermarked.sh' >> $GITHUB_STEP_SUMMARY
+          echo 'nohup bash /home/hstgr-srv1164617/replace_watermarked.sh > replace.log 2>&1 &' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
