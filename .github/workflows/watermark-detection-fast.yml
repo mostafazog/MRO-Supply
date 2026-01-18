@@ -1,0 +1,307 @@
+name: Fast Watermark Detection (Pre-split Chunks)
+
+on:
+  workflow_dispatch:
+    inputs:
+      workers:
+        description: 'Number of parallel workers (max 250)'
+        required: false
+        default: '50'
+      max_parallel:
+        description: 'Max concurrent jobs (20 free, 50 paid)'
+        required: false
+        default: '20'
+
+env:
+  SERVER_HOST: srv1164617.hstgr.cloud
+  SERVER_USER: root
+  CHUNKS_DIR: /home/hstgr-srv1164617/image_chunks
+
+jobs:
+  # Job 1: Prepare chunks on server
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      chunk_count: ${{ steps.prepare-chunks.outputs.chunk_count }}
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Prepare chunks on server
+        id: prepare-chunks
+        run: |
+          WORKERS=${{ github.event.inputs.workers || '50' }}
+
+          echo "Creating $WORKERS image chunks on server..."
+
+          ssh ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << REMOTE_SCRIPT
+          set -e
+
+          CHUNKS_DIR="${{ env.CHUNKS_DIR }}"
+          IMAGE_DIR="/home/hstgr-srv1164617/htdocs/srv1164617.hstgr.cloud/img/p"
+          WORKERS=$WORKERS
+
+          # Clean old chunks
+          rm -rf "\$CHUNKS_DIR"
+          mkdir -p "\$CHUNKS_DIR"
+
+          # Get image list
+          echo "Finding original images..."
+          find "\$IMAGE_DIR" -type f -name "*.jpg" | grep -v "_default" > "\$CHUNKS_DIR/all_images.txt"
+
+          TOTAL=\$(wc -l < "\$CHUNKS_DIR/all_images.txt")
+          CHUNK_SIZE=\$(( (TOTAL + WORKERS - 1) / WORKERS ))
+
+          echo "Total images: \$TOTAL"
+          echo "Chunk size: \$CHUNK_SIZE"
+          echo "Workers: \$WORKERS"
+
+          # Split into chunk files
+          cd "\$CHUNKS_DIR"
+          split -l \$CHUNK_SIZE -d -a 3 all_images.txt chunk_
+
+          # Create small tar.gz for each chunk
+          echo "Creating tar archives for each chunk..."
+          for chunk_file in chunk_*; do
+            chunk_num=\${chunk_file#chunk_}
+            echo "Creating archive for chunk \$chunk_num..."
+            tar -czf "images_\${chunk_num}.tar.gz" -T "\$chunk_file" -C / --transform 's|.*/||' 2>/dev/null || true
+            rm "\$chunk_file"
+          done
+
+          echo "Chunks created:"
+          ls -lh "\$CHUNKS_DIR"/*.tar.gz | head -20
+
+          CHUNK_COUNT=\$(ls "\$CHUNKS_DIR"/*.tar.gz 2>/dev/null | wc -l)
+          echo "CHUNK_COUNT=\$CHUNK_COUNT"
+          REMOTE_SCRIPT
+
+          # Get actual chunk count
+          CHUNK_COUNT=$(ssh ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} "ls ${{ env.CHUNKS_DIR }}/*.tar.gz 2>/dev/null | wc -l")
+          echo "chunk_count=$CHUNK_COUNT" >> $GITHUB_OUTPUT
+          echo "Created $CHUNK_COUNT chunks"
+
+      - name: Set matrix
+        id: set-matrix
+        run: |
+          CHUNK_COUNT=${{ steps.prepare-chunks.outputs.chunk_count }}
+          # Create JSON array [0, 1, 2, ..., N-1]
+          MATRIX=$(seq 0 $((CHUNK_COUNT - 1)) | jq -R . | jq -s -c .)
+          echo "matrix={\"chunk\":$MATRIX}" >> $GITHUB_OUTPUT
+
+  # Job 2: Process each chunk
+  process:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJson(github.event.inputs.max_parallel || '20') }}
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache EasyOCR models
+        uses: actions/cache@v4
+        with:
+          path: ~/.EasyOCR
+          key: easyocr-models-v1
+
+      - name: Install dependencies
+        run: pip install easyocr pillow
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Download and process chunk ${{ matrix.chunk }}
+        run: |
+          CHUNK_NUM=$(printf '%03d' ${{ matrix.chunk }})
+
+          echo "Downloading chunk $CHUNK_NUM..."
+          scp ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.CHUNKS_DIR }}/images_${CHUNK_NUM}.tar.gz . 2>/dev/null || {
+            echo "Chunk $CHUNK_NUM not found, skipping"
+            touch watermarked_${{ matrix.chunk }}.txt
+            exit 0
+          }
+
+          echo "Extracting..."
+          mkdir -p images
+          tar -xzf images_${CHUNK_NUM}.tar.gz -C images/ 2>/dev/null || true
+
+          IMAGE_COUNT=$(ls images/*.jpg 2>/dev/null | wc -l)
+          echo "Processing $IMAGE_COUNT images..."
+
+          python3 << 'PYTHON_SCRIPT'
+          import os
+          import easyocr
+          from pathlib import Path
+
+          CHUNK_ID = ${{ matrix.chunk }}
+          WATERMARK_PATTERNS = ['mrosupply', 'mro supply', 'mrosupply.com', 'www.mrosupply']
+
+          # Get all images
+          images_dir = Path('images')
+          images = list(images_dir.glob('*.jpg'))
+
+          print(f"Worker {CHUNK_ID}: Processing {len(images)} images")
+
+          if not images:
+              open(f"watermarked_{CHUNK_ID}.txt", 'w').close()
+              exit(0)
+
+          # Initialize EasyOCR
+          print("Loading EasyOCR...")
+          reader = easyocr.Reader(['en'], gpu=False)
+
+          watermarked = []
+          for i, img_path in enumerate(images):
+              try:
+                  results = reader.readtext(str(img_path))
+                  text = ' '.join([r[1].lower() for r in results])
+
+                  for pattern in WATERMARK_PATTERNS:
+                      if pattern.lower() in text:
+                          # Store original filename (which is the server path encoded)
+                          watermarked.append(img_path.name)
+                          break
+
+                  if (i + 1) % 50 == 0:
+                      print(f"Progress: {i+1}/{len(images)}, found {len(watermarked)} watermarked")
+
+              except Exception as e:
+                  continue
+
+          with open(f"watermarked_{CHUNK_ID}.txt", 'w') as f:
+              f.write('\n'.join(watermarked))
+
+          print(f"Complete! Found {len(watermarked)} watermarked")
+          PYTHON_SCRIPT
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ matrix.chunk }}
+          path: watermarked_${{ matrix.chunk }}.txt
+
+  # Job 3: Combine results
+  combine:
+    needs: process
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: result-*
+          path: results/
+          merge-multiple: true
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Combine and map to server paths
+        run: |
+          # Get the original image list to map filenames back to paths
+          ssh ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} \
+            "cat ${{ env.CHUNKS_DIR }}/all_images.txt" > all_images.txt
+
+          # Combine all watermarked filenames
+          cat results/watermarked_*.txt | sort | uniq > watermarked_filenames.txt
+
+          # Map filenames back to full paths
+          echo "Mapping filenames to server paths..."
+          python3 << 'PYTHON'
+          with open('all_images.txt') as f:
+              all_paths = {line.strip().split('/')[-1]: line.strip() for line in f}
+
+          with open('watermarked_filenames.txt') as f:
+              watermarked = [line.strip() for line in f if line.strip()]
+
+          mapped = []
+          for filename in watermarked:
+              if filename in all_paths:
+                  mapped.append(all_paths[filename])
+              else:
+                  # Filename might be the full path already
+                  mapped.append(filename)
+
+          with open('watermarked_images.txt', 'w') as f:
+              f.write('\n'.join(mapped))
+
+          print(f"Mapped {len(mapped)} watermarked images")
+          PYTHON
+
+          TOTAL=$(wc -l < watermarked_images.txt)
+          echo "========================================"
+          echo "TOTAL WATERMARKED IMAGES: $TOTAL"
+          echo "========================================"
+
+      - name: Upload to server
+        run: |
+          scp watermarked_images.txt \
+            ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:/home/hstgr-srv1164617/watermarked_images.txt
+          echo "Uploaded to: /home/hstgr-srv1164617/watermarked_images.txt"
+
+      - name: Create replacement script on server
+        run: |
+          ssh ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << 'REMOTE'
+          cat > /home/hstgr-srv1164617/replace_watermarked.sh << 'SCRIPT'
+          #!/bin/bash
+          PLACEHOLDER="/home/hstgr-srv1164617/htdocs/srv1164617.hstgr.cloud/img/p/en-default-large_default.jpg"
+          FILE="/home/hstgr-srv1164617/watermarked_images.txt"
+
+          count=0
+          total=$(wc -l < "$FILE")
+
+          while read img; do
+            [ -f "$img" ] || continue
+            dir=$(dirname "$img")
+            base=$(basename "$img" .jpg)
+
+            cp "$PLACEHOLDER" "$img"
+            for size in small cart home medium large; do
+              cp "$PLACEHOLDER" "$dir/${base}-${size}_default.jpg" 2>/dev/null
+            done
+
+            count=$((count + 1))
+            [ $((count % 500)) -eq 0 ] && echo "Replaced $count/$total..."
+          done < "$FILE"
+
+          echo "Done! Replaced $count images"
+          SCRIPT
+          chmod +x /home/hstgr-srv1164617/replace_watermarked.sh
+          REMOTE
+          echo "Replacement script created"
+
+      - name: Upload final results
+        uses: actions/upload-artifact@v4
+        with:
+          name: watermarked-final
+          path: watermarked_images.txt
+          retention-days: 30
+
+      - name: Summary
+        run: |
+          TOTAL=$(wc -l < watermarked_images.txt)
+          echo "## Watermark Detection Complete" >> $GITHUB_STEP_SUMMARY
+          echo "- **Watermarked images:** $TOTAL" >> $GITHUB_STEP_SUMMARY
+          echo "- **Results:** /home/hstgr-srv1164617/watermarked_images.txt" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Replace watermarked images:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo 'nohup bash /home/hstgr-srv1164617/replace_watermarked.sh > replace.log 2>&1 &' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
