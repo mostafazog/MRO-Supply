@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       workers:
-        description: 'Number of parallel workers'
+        description: 'Number of workers (chunks already exist on server)'
         required: false
         default: '250'
 
@@ -15,12 +15,11 @@ env:
   CHUNKS_DIR: /home/hstgr-srv1164617/image_chunks
 
 jobs:
-  # Job 1: Create chunks ON THE SERVER (not on runner)
+  # Job 1: Verify chunks exist and set matrix
   prepare:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
-      chunk_count: ${{ steps.create-chunks.outputs.chunk_count }}
     steps:
       - name: Setup SSH
         run: |
@@ -28,84 +27,28 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Create chunks on server
-        id: create-chunks
+      - name: Check chunks on server
+        id: check
         run: |
-          WORKERS=${{ github.event.inputs.workers || '250' }}
-
-          echo "Creating $WORKERS chunks on server..."
-
-          sshpass -e ssh -o StrictHostKeyChecking=no ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << REMOTE_SCRIPT
-          set -e
-
-          CHUNKS_DIR="${{ env.CHUNKS_DIR }}"
-          ZIP_FILE="/home/hstgr-srv1164617/main_product_photos.zip"
-          WORKERS=$WORKERS
-
-          # Clean and create chunks directory
-          rm -rf "\$CHUNKS_DIR"
-          mkdir -p "\$CHUNKS_DIR"
-
-          # Extract zip to temp location
-          echo "Extracting zip..."
-          TEMP_DIR="\$CHUNKS_DIR/temp_extract"
-          mkdir -p "\$TEMP_DIR"
-          unzip -q "\$ZIP_FILE" -d "\$TEMP_DIR"
-
-          # Get image list
-          echo "Finding images..."
-          find "\$TEMP_DIR" -name "*.jpg" > "\$CHUNKS_DIR/all_images.txt"
-          TOTAL=\$(wc -l < "\$CHUNKS_DIR/all_images.txt")
-          CHUNK_SIZE=\$(( (TOTAL + WORKERS - 1) / WORKERS ))
-
-          echo "Total images: \$TOTAL"
-          echo "Chunk size: \$CHUNK_SIZE"
-
-          # Split into chunk lists
-          cd "\$CHUNKS_DIR"
-          split -l \$CHUNK_SIZE -d -a 3 all_images.txt list_
-
-          # Create tar.gz for each chunk
-          echo "Creating chunk archives..."
-          i=0
-          for list_file in list_*; do
-            chunk_num=\$(printf '%03d' \$i)
-            echo "Chunk \$chunk_num..."
-
-            mkdir -p "chunk_\$chunk_num"
-            while IFS= read -r img; do
-              cp "\$img" "chunk_\$chunk_num/" 2>/dev/null || true
-            done < "\$list_file"
-
-            tar -czf "chunk_\${chunk_num}.tar.gz" "chunk_\$chunk_num"
-            rm -rf "chunk_\$chunk_num" "\$list_file"
-
-            i=\$((i + 1))
-          done
-
-          # Save server paths for later mapping
-          find /home/hstgr-srv1164617/htdocs/srv1164617.hstgr.cloud/img/p -name "*.jpg" | grep -v "_default" > "\$CHUNKS_DIR/server_paths.txt"
-
-          # Cleanup temp
-          rm -rf "\$TEMP_DIR"
-
-          echo "Created \$i chunks"
-          ls -lh "\$CHUNKS_DIR"/*.tar.gz | head -5
-          REMOTE_SCRIPT
-
-          # Get chunk count
           CHUNK_COUNT=$(sshpass -e ssh -o StrictHostKeyChecking=no ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} \
             "ls ${{ env.CHUNKS_DIR }}/*.tar.gz 2>/dev/null | wc -l")
 
+          echo "Found $CHUNK_COUNT chunks on server"
+
+          if [ "$CHUNK_COUNT" -eq 0 ]; then
+            echo "ERROR: No chunks found! Please run chunk creation first."
+            exit 1
+          fi
+
           echo "chunk_count=$CHUNK_COUNT" >> $GITHUB_OUTPUT
-          echo "Created $CHUNK_COUNT chunks on server"
 
       - name: Set matrix
         id: set-matrix
         run: |
-          CHUNK_COUNT=${{ steps.create-chunks.outputs.chunk_count }}
+          CHUNK_COUNT=${{ steps.check.outputs.chunk_count }}
           MATRIX=$(seq 0 $((CHUNK_COUNT - 1)) | jq -R . | jq -s -c .)
           echo "matrix={\"chunk\":$MATRIX}" >> $GITHUB_OUTPUT
+          echo "Processing $CHUNK_COUNT chunks"
 
   # Job 2: Process each chunk
   process:
@@ -141,7 +84,7 @@ jobs:
         run: |
           CHUNK_NUM=$(printf '%03d' ${{ matrix.chunk }})
 
-          echo "Downloading chunk $CHUNK_NUM from server..."
+          echo "Downloading chunk $CHUNK_NUM..."
           sshpass -e scp -o StrictHostKeyChecking=no \
             ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.CHUNKS_DIR }}/chunk_${CHUNK_NUM}.tar.gz . \
             2>/dev/null || {
@@ -270,12 +213,6 @@ jobs:
           SCRIPT
           chmod +x /home/hstgr-srv1164617/replace_watermarked.sh
           REMOTE
-
-      - name: Cleanup server chunks
-        run: |
-          sshpass -e ssh -o StrictHostKeyChecking=no ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} \
-            "rm -rf ${{ env.CHUNKS_DIR }}"
-          echo "Cleaned up server chunks"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
