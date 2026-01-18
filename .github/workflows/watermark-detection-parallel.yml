@@ -84,11 +84,23 @@ jobs:
         run: |
           CHUNK_NUM=$(printf '%03d' ${{ matrix.chunk }})
 
-          echo "Downloading chunk $CHUNK_NUM..."
-          sshpass -e scp -o StrictHostKeyChecking=no \
-            ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.CHUNKS_DIR }}/chunk_${CHUNK_NUM}.tar.gz . \
-            2>/dev/null || {
-              echo "Chunk not found, skipping"
+          echo "=== Debug Info ==="
+          echo "SSHPASS env set: $([ -n \"$SSHPASS\" ] && echo 'YES' || echo 'NO')"
+          echo "Server: ${{ env.SERVER_HOST }}"
+          echo "Chunk path: ${{ env.CHUNKS_DIR }}/chunk_${CHUNK_NUM}.tar.gz"
+
+          echo "=== Testing SSH connection ==="
+          sshpass -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} \
+            "echo 'SSH OK'; ls -la ${{ env.CHUNKS_DIR }}/chunk_${CHUNK_NUM}.tar.gz" || {
+              echo "SSH connection failed!"
+              exit 1
+            }
+
+          echo "=== Downloading chunk $CHUNK_NUM ==="
+          sshpass -e scp -o StrictHostKeyChecking=no -o ConnectTimeout=60 \
+            ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.CHUNKS_DIR }}/chunk_${CHUNK_NUM}.tar.gz . || {
+              echo "SCP download failed!"
               touch watermarked_${{ matrix.chunk }}.txt
               exit 0
             }
