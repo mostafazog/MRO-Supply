@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 50
+      max-parallel: 20  # Reduced to avoid SSH rate limiting
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
     steps:
       - name: Setup Python
@@ -84,26 +84,33 @@ jobs:
         run: |
           CHUNK_NUM=$(printf '%03d' ${{ matrix.chunk }})
 
-          echo "=== Debug Info ==="
-          echo "SSHPASS env set: $([ -n \"$SSHPASS\" ] && echo 'YES' || echo 'NO')"
-          echo "Server: ${{ env.SERVER_HOST }}"
-          echo "Chunk path: ${{ env.CHUNKS_DIR }}/chunk_${CHUNK_NUM}.tar.gz"
-
-          echo "=== Testing SSH connection ==="
-          sshpass -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
-            ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} \
-            "echo 'SSH OK'; ls -la ${{ env.CHUNKS_DIR }}/chunk_${CHUNK_NUM}.tar.gz" || {
-              echo "SSH connection failed!"
-              exit 1
-            }
+          # Random delay (0-30s) to stagger SSH connections and avoid rate limiting
+          DELAY=$((RANDOM % 30))
+          echo "Worker ${{ matrix.chunk }}: waiting ${DELAY}s to stagger connections..."
+          sleep $DELAY
 
           echo "=== Downloading chunk $CHUNK_NUM ==="
-          sshpass -e scp -o StrictHostKeyChecking=no -o ConnectTimeout=60 \
-            ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.CHUNKS_DIR }}/chunk_${CHUNK_NUM}.tar.gz . || {
-              echo "SCP download failed!"
-              touch watermarked_${{ matrix.chunk }}.txt
-              exit 0
-            }
+
+          # Retry loop for SSH rate limiting
+          MAX_RETRIES=5
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $i of $MAX_RETRIES..."
+
+            if sshpass -e scp -o StrictHostKeyChecking=no -o ConnectTimeout=60 \
+              ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.CHUNKS_DIR }}/chunk_${CHUNK_NUM}.tar.gz . 2>&1; then
+              echo "Download successful!"
+              break
+            else
+              echo "Attempt $i failed, waiting before retry..."
+              if [ $i -lt $MAX_RETRIES ]; then
+                sleep $((10 + RANDOM % 20))
+              else
+                echo "All retries failed!"
+                touch watermarked_${{ matrix.chunk }}.txt
+                exit 0
+              fi
+            fi
+          done
 
           echo "Extracting..."
           tar -xzf chunk_${CHUNK_NUM}.tar.gz
