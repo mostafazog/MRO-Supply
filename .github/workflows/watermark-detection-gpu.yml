@@ -1,0 +1,238 @@
+name: GPU Watermark Detection (GitHub GPU Runner)
+
+# Requires GitHub Teams or Enterprise for GPU runners
+# GPU runners cost ~$0.07/min for T4
+
+on:
+  workflow_dispatch:
+    inputs:
+      workers:
+        description: 'Number of GPU workers'
+        required: false
+        default: '10'
+      max_parallel:
+        description: 'Max concurrent GPU jobs'
+        required: false
+        default: '10'
+
+env:
+  SERVER_HOST: srv1164617.hstgr.cloud
+  SERVER_USER: root
+  SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+  CHUNKS_DIR: /home/hstgr-srv1164617/image_chunks
+
+jobs:
+  # Job 1: Prepare chunks on server
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Setup SSH
+        run: |
+          sudo apt-get update && sudo apt-get install -y sshpass
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Prepare chunks on server
+        run: |
+          WORKERS=${{ github.event.inputs.workers || '10' }}
+
+          sshpass -e ssh -o StrictHostKeyChecking=no ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << REMOTE
+          set -e
+          CHUNKS_DIR="${{ env.CHUNKS_DIR }}"
+          IMAGE_DIR="/home/hstgr-srv1164617/htdocs/srv1164617.hstgr.cloud/img/p"
+
+          rm -rf "\$CHUNKS_DIR"
+          mkdir -p "\$CHUNKS_DIR"
+
+          echo "Finding images..."
+          find "\$IMAGE_DIR" -type f -name "*.jpg" | grep -v "_default" > "\$CHUNKS_DIR/all_images.txt"
+
+          TOTAL=\$(wc -l < "\$CHUNKS_DIR/all_images.txt")
+          CHUNK_SIZE=\$(( (TOTAL + $WORKERS - 1) / $WORKERS ))
+
+          echo "Total: \$TOTAL, Chunks: $WORKERS, Size: \$CHUNK_SIZE"
+
+          cd "\$CHUNKS_DIR"
+          split -l \$CHUNK_SIZE -d -a 3 all_images.txt chunk_
+
+          for f in chunk_*; do
+            num=\${f#chunk_}
+            tar -czf "images_\${num}.tar.gz" -T "\$f" -C / --transform 's|.*/||' 2>/dev/null || true
+            rm "\$f"
+          done
+
+          ls -lh *.tar.gz | head -10
+          REMOTE
+
+      - name: Set matrix
+        id: set-matrix
+        run: |
+          WORKERS=${{ github.event.inputs.workers || '10' }}
+          MATRIX=$(seq 0 $((WORKERS - 1)) | jq -R . | jq -s -c .)
+          echo "matrix={\"chunk\":$MATRIX}" >> $GITHUB_OUTPUT
+
+  # Job 2: Process with GPU (T4)
+  process-gpu:
+    needs: prepare
+    runs-on: gpu-runner-t4  # GitHub GPU runner label - adjust based on your setup
+    # Alternative labels: ubuntu-latest-gpu, linux-gpu-t4
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJson(github.event.inputs.max_parallel || '10') }}
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Check GPU
+        run: nvidia-smi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y sshpass
+          pip install easyocr pillow torch torchvision --index-url https://download.pytorch.org/whl/cu118
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Download chunk ${{ matrix.chunk }}
+        run: |
+          CHUNK_NUM=$(printf '%03d' ${{ matrix.chunk }})
+          sshpass -e scp -o StrictHostKeyChecking=no \
+            ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.CHUNKS_DIR }}/images_${CHUNK_NUM}.tar.gz . \
+            2>/dev/null || touch empty_chunk
+
+          if [ -f empty_chunk ]; then
+            echo "No chunk for this worker"
+            touch watermarked_${{ matrix.chunk }}.txt
+            exit 0
+          fi
+
+          mkdir -p images
+          tar -xzf images_${CHUNK_NUM}.tar.gz -C images/
+          echo "Extracted $(ls images/*.jpg 2>/dev/null | wc -l) images"
+
+      - name: Run GPU OCR
+        run: |
+          python3 << 'PYTHON'
+          import os
+          import easyocr
+          from pathlib import Path
+          import torch
+
+          print(f"CUDA available: {torch.cuda.is_available()}")
+          if torch.cuda.is_available():
+              print(f"GPU: {torch.cuda.get_device_name(0)}")
+
+          CHUNK_ID = ${{ matrix.chunk }}
+          WATERMARK_PATTERNS = ['mrosupply', 'mro supply', 'mrosupply.com', 'www.mrosupply']
+
+          images = list(Path('images').glob('*.jpg'))
+          print(f"Processing {len(images)} images with GPU...")
+
+          if not images:
+              open(f"watermarked_{CHUNK_ID}.txt", 'w').close()
+              exit(0)
+
+          reader = easyocr.Reader(['en'], gpu=True)  # GPU enabled!
+
+          watermarked = []
+          for i, img in enumerate(images):
+              try:
+                  results = reader.readtext(str(img))
+                  text = ' '.join([r[1].lower() for r in results])
+
+                  for pattern in WATERMARK_PATTERNS:
+                      if pattern.lower() in text:
+                          watermarked.append(img.name)
+                          break
+
+                  if (i + 1) % 1000 == 0:
+                      print(f"Progress: {i+1}/{len(images)}, found {len(watermarked)}")
+              except:
+                  continue
+
+          with open(f"watermarked_{CHUNK_ID}.txt", 'w') as f:
+              f.write('\n'.join(watermarked))
+
+          print(f"Done! Found {len(watermarked)} watermarked")
+          PYTHON
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ matrix.chunk }}
+          path: watermarked_${{ matrix.chunk }}.txt
+
+  # Job 3: Combine results
+  combine:
+    needs: process-gpu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: result-*
+          path: results/
+          merge-multiple: true
+
+      - name: Setup SSH
+        run: |
+          sudo apt-get update && sudo apt-get install -y sshpass
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Combine and map paths
+        run: |
+          # Get server paths
+          sshpass -e ssh -o StrictHostKeyChecking=no ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} \
+            "cat ${{ env.CHUNKS_DIR }}/all_images.txt" > all_images.txt
+
+          cat results/watermarked_*.txt | sort | uniq > watermarked_filenames.txt
+
+          python3 << 'PYTHON'
+          with open('all_images.txt') as f:
+              paths = {line.strip().split('/')[-1]: line.strip() for line in f}
+
+          with open('watermarked_filenames.txt') as f:
+              names = [line.strip() for line in f if line.strip()]
+
+          mapped = [paths.get(n, n) for n in names if n in paths]
+
+          with open('watermarked_images.txt', 'w') as f:
+              f.write('\n'.join(mapped))
+
+          print(f"Total watermarked: {len(mapped)}")
+          PYTHON
+
+      - name: Upload to server
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no watermarked_images.txt \
+            ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:/home/hstgr-srv1164617/watermarked_images.txt
+
+          TOTAL=$(wc -l < watermarked_images.txt)
+          echo "Uploaded $TOTAL paths"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: watermarked-final
+          path: watermarked_images.txt
+
+      - name: Summary
+        run: |
+          TOTAL=$(wc -l < watermarked_images.txt)
+          echo "## GPU Watermark Detection Complete" >> $GITHUB_STEP_SUMMARY
+          echo "- **Watermarked:** $TOTAL images" >> $GITHUB_STEP_SUMMARY
+          echo "- **GPU:** NVIDIA T4" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Replace on server:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo 'nohup bash /home/hstgr-srv1164617/replace_watermarked.sh > replace.log 2>&1 &' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
