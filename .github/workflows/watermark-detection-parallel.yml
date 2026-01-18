@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 20  # Reduced to avoid SSH rate limiting
+      max-parallel: 10  # Further reduced to avoid SSH rate limiting
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
     steps:
       - name: Setup Python
@@ -75,19 +75,29 @@ jobs:
           sudo apt-get update && sudo apt-get install -y sshpass
           pip install easyocr pillow
 
-      - name: Setup SSH
+      - name: Setup SSH with delay
         run: |
+          # Random delay (0-60s) to stagger SSH keyscans and avoid rate limiting
+          DELAY=$((RANDOM % 60))
+          echo "Worker ${{ matrix.chunk }}: waiting ${DELAY}s before SSH keyscan..."
+          sleep $DELAY
+
           mkdir -p ~/.ssh
-          ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+          # Retry ssh-keyscan with backoff
+          for i in 1 2 3 4 5; do
+            if ssh-keyscan -H ${{ env.SERVER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null; then
+              echo "SSH keyscan successful"
+              break
+            else
+              echo "Keyscan attempt $i failed, retrying in 10s..."
+              sleep $((10 + RANDOM % 10))
+            fi
+          done
 
       - name: Download and process chunk ${{ matrix.chunk }}
         run: |
           CHUNK_NUM=$(printf '%03d' ${{ matrix.chunk }})
-
-          # Random delay (0-30s) to stagger SSH connections and avoid rate limiting
-          DELAY=$((RANDOM % 30))
-          echo "Worker ${{ matrix.chunk }}: waiting ${DELAY}s to stagger connections..."
-          sleep $DELAY
 
           echo "=== Downloading chunk $CHUNK_NUM ==="
 
