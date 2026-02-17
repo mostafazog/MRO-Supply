@@ -1,0 +1,83 @@
+name: Upload Brand Logos NOW
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'CORRECT_BRAND_LOGOS/**'
+      - '.github/workflows/upload-logos-now.yml'
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install sshpass
+        run: sudo apt-get update && sudo apt-get install -y sshpass
+
+      - name: Setup SSH directory
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keyscan -H srv1164617.hstgr.cloud >> ~/.ssh/known_hosts
+
+      - name: Upload brand logos
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          echo "=========================================="
+          echo "Uploading 36 brand logos to server..."
+          echo "=========================================="
+
+          cd CORRECT_BRAND_LOGOS
+
+          sshpass -e scp -o StrictHostKeyChecking=no *.jpg \
+            hstgr-srv1164617@srv1164617.hstgr.cloud:/home/hstgr-srv1164617/htdocs/srv1164617.hstgr.cloud/img/m/
+
+          echo "✓ Upload complete"
+
+      - name: Set file permissions
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          echo "Setting file permissions to 644..."
+
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            hstgr-srv1164617@srv1164617.hstgr.cloud \
+            "chmod 644 /home/hstgr-srv1164617/htdocs/srv1164617.hstgr.cloud/img/m/*.jpg"
+
+          echo "✓ Permissions set"
+
+      - name: Clear PrestaShop cache
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          echo "Clearing PrestaShop cache..."
+
+          sshpass -e ssh -o StrictHostKeyChecking=no \
+            hstgr-srv1164617@srv1164617.hstgr.cloud \
+            "cd /home/hstgr-srv1164617/htdocs/srv1164617.hstgr.cloud && \
+             rm -rf var/cache/prod/* var/cache/dev/* cache/smarty/compile/* cache/smarty/cache/* 2>/dev/null; \
+             echo 'Cache cleared'"
+
+          echo "✓ Cache cleared"
+
+      - name: Summary
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "✅ UPLOAD COMPLETE!"
+          echo "=========================================="
+          echo ""
+          echo "Uploaded: 36 brand logos"
+          echo "  ✓ 10 REAL logos from MRO Supply"
+          echo "  ✓ 26 Text placeholders"
+          echo ""
+          echo "Next steps:"
+          echo "  1. Visit: https://www.yarinind.com/brands"
+          echo "  2. Check admin: https://www.yarinind.com/admin"
+          echo ""
+          echo "=========================================="
