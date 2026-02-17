@@ -1,0 +1,40 @@
+name: Upload Brand Logos to PrestaShop
+
+on:
+  workflow_dispatch:
+
+jobs:
+  upload-logos:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H srv1164617.hstgr.cloud >> ~/.ssh/known_hosts
+
+      - name: Upload logos to server
+        run: |
+          scp -i ~/.ssh/id_rsa CORRECT_BRAND_LOGOS/*.jpg hstgr-srv1164617@srv1164617.hstgr.cloud:/home/hstgr-srv1164617/htdocs/srv1164617.hstgr.cloud/img/m/
+
+      - name: Upload PHP script
+        run: |
+          scp -i ~/.ssh/id_rsa upload_brand_logos.php hstgr-srv1164617@srv1164617.hstgr.cloud:/home/hstgr-srv1164617/htdocs/srv1164617.hstgr.cloud/
+
+      - name: Run upload script on server
+        run: |
+          ssh -i ~/.ssh/id_rsa hstgr-srv1164617@srv1164617.hstgr.cloud "cd /home/hstgr-srv1164617/htdocs/srv1164617.hstgr.cloud && php upload_brand_logos.php"
+
+      - name: Clear PrestaShop cache
+        run: |
+          ssh -i ~/.ssh/id_rsa hstgr-srv1164617@srv1164617.hstgr.cloud "cd /home/hstgr-srv1164617/htdocs/srv1164617.hstgr.cloud && rm -rf var/cache/prod/* var/cache/dev/* cache/smarty/compile/* cache/smarty/cache/*"
+
+      - name: Done
+        run: |
+          echo "✅ Brand logos uploaded successfully!"
+          echo "Visit: https://www.yarinind.com/brands"
